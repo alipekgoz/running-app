@@ -1,10 +1,11 @@
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
-import type { Coordinates } from '../types';
+import type { Coordinates, GpsPoint } from '../types';
+import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 
 if (MAPBOX_ACCESS_TOKEN) {
   void Mapbox.setAccessToken(MAPBOX_ACCESS_TOKEN);
@@ -15,6 +16,10 @@ export function MapScreen() {
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const [locationDebugText, setLocationDebugText] = useState('Waiting for location request...');
+  const [isTracking, setIsTracking] = useState(false);
+  const [routePoints, setRoutePoints] = useState<GpsPoint[]>([]);
+  const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
+  const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
 
   useEffect(() => {
     async function loadCurrentLocation() {
@@ -86,7 +91,91 @@ export function MapScreen() {
     }
 
     void loadCurrentLocation();
+
+    return () => {
+      locationSubscriptionRef.current?.remove();
+    };
   }, []);
+
+  async function startTracking(): Promise<void> {
+    try {
+      setLocationError(null);
+      setLastRejectedReason(null);
+      setRoutePoints([]);
+      setLocationDebugText('Starting GPS tracking...');
+
+      const permission = await Location.requestForegroundPermissionsAsync();
+
+      if (permission.status !== 'granted') {
+        setLocationError('Location permission was denied. Enable it in Android settings to start tracking.');
+        setLocationDebugText(`Tracking permission status: ${permission.status}`);
+        return;
+      }
+
+      const servicesEnabled = await Location.hasServicesEnabledAsync();
+
+      if (!servicesEnabled) {
+        setLocationError('Location services are turned off. Turn them on before starting tracking.');
+        setLocationDebugText('Tracking could not start because location services are disabled.');
+        return;
+      }
+
+      locationSubscriptionRef.current?.remove();
+
+      const subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 1000,
+          distanceInterval: 1,
+          mayShowUserSettingsDialog: true,
+        },
+        (position) => {
+          const nextPoint = toGpsPoint(position);
+
+          setCurrentLocation({
+            latitude: nextPoint.latitude,
+            longitude: nextPoint.longitude,
+          });
+
+          setRoutePoints((previousPoints) => {
+            const previousPoint = previousPoints.at(-1) ?? null;
+            const rejectionReason = getGpsPointRejectionReason(previousPoint, nextPoint);
+
+            if (rejectionReason) {
+              setLastRejectedReason(rejectionReason);
+              setLocationDebugText(
+                `Rejected point: ${rejectionReason ?? 'unknown'} @ ${nextPoint.latitude.toFixed(6)}, ${nextPoint.longitude.toFixed(6)}`,
+              );
+              return previousPoints;
+            }
+
+            setLastRejectedReason(null);
+            setLocationDebugText(
+              `Accepted point ${previousPoints.length + 1}: ${nextPoint.latitude.toFixed(6)}, ${nextPoint.longitude.toFixed(6)}`,
+            );
+            return [...previousPoints, nextPoint];
+          });
+        },
+      );
+
+      locationSubscriptionRef.current = subscription;
+      setIsTracking(true);
+      setLocationDebugText('GPS tracking started.');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown tracking error';
+
+      console.log('MapScreen startTracking error:', error);
+      setLocationError(`Tracking could not be started: ${errorMessage}`);
+      setLocationDebugText(`Tracking start error: ${errorMessage}`);
+    }
+  }
+
+  function stopTracking(): void {
+    locationSubscriptionRef.current?.remove();
+    locationSubscriptionRef.current = null;
+    setIsTracking(false);
+    setLocationDebugText('GPS tracking stopped.');
+  }
 
   if (!MAPBOX_ACCESS_TOKEN) {
     return (
@@ -123,18 +212,66 @@ export function MapScreen() {
           <Text style={styles.overlayText}>{locationError}</Text>
         </View>
       ) : null}
+      <View style={styles.controls}>
+        <Pressable
+          disabled={isTracking}
+          onPress={() => {
+            void startTracking();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            styles.startButton,
+            isTracking ? styles.buttonDisabled : null,
+            pressed && !isTracking ? styles.buttonPressed : null,
+          ]}
+        >
+          <Text style={styles.buttonText}>Start</Text>
+        </Pressable>
+        <Pressable
+          disabled={!isTracking}
+          onPress={stopTracking}
+          style={({ pressed }) => [
+            styles.button,
+            styles.stopButton,
+            !isTracking ? styles.buttonDisabled : null,
+            pressed && isTracking ? styles.buttonPressed : null,
+          ]}
+        >
+          <Text style={styles.buttonText}>Stop</Text>
+        </Pressable>
+      </View>
       <View style={styles.debugPanel}>
-        <Text style={styles.debugTitle}>Location Debug</Text>
+        <Text style={styles.debugTitle}>Tracking Debug</Text>
         <Text style={styles.debugText}>{locationDebugText}</Text>
+        <Text style={styles.debugText}>Tracking active: {isTracking ? 'Yes' : 'No'}</Text>
+        <Text style={styles.debugText}>Accepted points: {routePoints.length}</Text>
         <Text style={styles.debugText}>
-          Last success:{' '}
-          {currentLocation
-            ? `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`
-            : 'No location yet'}
+          Last coordinate:{' '}
+          {routePoints.length > 0
+            ? `${routePoints[routePoints.length - 1].latitude.toFixed(6)}, ${routePoints[routePoints.length - 1].longitude.toFixed(6)}`
+            : currentLocation
+              ? `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`
+              : 'No location yet'}
+        </Text>
+        <Text style={styles.debugText}>
+          Last rejected reason: {lastRejectedReason ?? 'None'}
         </Text>
       </View>
     </View>
   );
+}
+
+function toGpsPoint(position: Location.LocationObject): GpsPoint {
+  return {
+    latitude: position.coords.latitude,
+    longitude: position.coords.longitude,
+    accuracyMeters: position.coords.accuracy ?? Number.POSITIVE_INFINITY,
+    speedKmh:
+      position.coords.speed == null
+        ? undefined
+        : position.coords.speed * 3.6,
+    timestamp: position.timestamp,
+  };
 }
 
 const styles = StyleSheet.create({
@@ -179,6 +316,38 @@ const styles = StyleSheet.create({
     color: '#111111',
     fontSize: 16,
     fontWeight: '600',
+  },
+  controls: {
+    flexDirection: 'row',
+    gap: 12,
+    left: 16,
+    position: 'absolute',
+    right: 16,
+    top: 96,
+  },
+  button: {
+    alignItems: 'center',
+    borderRadius: 10,
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  buttonPressed: {
+    opacity: 0.85,
+  },
+  buttonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  startButton: {
+    backgroundColor: '#167c45',
+  },
+  stopButton: {
+    backgroundColor: '#b42318',
   },
   debugPanel: {
     backgroundColor: 'rgba(17, 17, 17, 0.82)',
