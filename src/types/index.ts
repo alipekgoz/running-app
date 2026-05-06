@@ -1,7 +1,6 @@
-export type Coordinates = {
-  latitude: number;
-  longitude: number;
-};
+import type { Coordinates } from './location';
+
+export type { Coordinates } from './location';
 
 export type GpsPoint = Coordinates & {
   accuracyMeters: number;

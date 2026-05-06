@@ -1,11 +1,13 @@
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { RouteLine } from '../components/map/RouteLine';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import type { Coordinates, GpsPoint } from '../types';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
+import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 
 if (MAPBOX_ACCESS_TOKEN) {
   void Mapbox.setAccessToken(MAPBOX_ACCESS_TOKEN);
@@ -20,6 +22,16 @@ export function MapScreen() {
   const [routePoints, setRoutePoints] = useState<GpsPoint[]>([]);
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
+  const isRouteLineRendered = routeGeoJSON !== null;
+  const cameraCenterCoordinate = useMemo<[number, number]>(
+    () => [
+      currentLocation?.longitude ?? DEFAULT_MAP_CENTER.longitude,
+      currentLocation?.latitude ?? DEFAULT_MAP_CENTER.latitude,
+    ],
+    [currentLocation],
+  );
+  const lastRoutePoint = routePoints.at(-1) ?? null;
 
   useEffect(() => {
     async function loadCurrentLocation() {
@@ -191,14 +203,9 @@ export function MapScreen() {
   return (
     <View style={styles.container}>
       <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
-        <Mapbox.Camera
-          centerCoordinate={[
-            currentLocation?.longitude ?? DEFAULT_MAP_CENTER.longitude,
-            currentLocation?.latitude ?? DEFAULT_MAP_CENTER.latitude,
-          ]}
-          zoomLevel={currentLocation ? 15 : 11}
-        />
+        <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
+        <RouteLine geoJSON={routeGeoJSON} />
       </Mapbox.MapView>
       {isLoadingLocation ? (
         <View style={styles.overlay}>
@@ -245,10 +252,13 @@ export function MapScreen() {
         <Text style={styles.debugText}>{locationDebugText}</Text>
         <Text style={styles.debugText}>Tracking active: {isTracking ? 'Yes' : 'No'}</Text>
         <Text style={styles.debugText}>Accepted points: {routePoints.length}</Text>
+        <Text style={styles.debugText}>Route point count: {routePoints.length}</Text>
+        <Text style={styles.debugText}>Route line rendered: {isRouteLineRendered ? 'Yes' : 'No'}</Text>
+        <Text style={styles.debugText}>GeoJSON valid: {routeGeoJSON ? 'Yes' : 'No'}</Text>
         <Text style={styles.debugText}>
           Last coordinate:{' '}
-          {routePoints.length > 0
-            ? `${routePoints[routePoints.length - 1].latitude.toFixed(6)}, ${routePoints[routePoints.length - 1].longitude.toFixed(6)}`
+          {lastRoutePoint
+            ? `${lastRoutePoint.latitude.toFixed(6)}, ${lastRoutePoint.longitude.toFixed(6)}`
             : currentLocation
               ? `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`
               : 'No location yet'}
