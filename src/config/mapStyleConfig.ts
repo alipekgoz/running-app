@@ -11,3 +11,14 @@ export const polygonCandidateRouteLineStyle = {
   lineColor: '#1f9d55',
   lineWidth: 6,
 } as const;
+
+export const polygonPreviewFillStyle = {
+  fillColor: '#1f9d55',
+  fillOpacity: 0.22,
+} as const;
+
+export const polygonPreviewOutlineStyle = {
+  lineColor: '#157347',
+  lineOpacity: 0.9,
+  lineWidth: 2,
+} as const;

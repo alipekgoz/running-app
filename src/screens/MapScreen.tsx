@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { RouteLine } from '../components/map/RouteLine';
+import { PolygonPreview } from '../components/map/PolygonPreview';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import type { Coordinates, GpsPoint } from '../types';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
+import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 
 if (MAPBOX_ACCESS_TOKEN) {
@@ -30,6 +32,10 @@ export function MapScreen() {
   const polygonAreaAnalysis = useMemo(
     () => analyzePolygonArea(routePoints, polygonAnalysis.isCandidate),
     [polygonAnalysis.isCandidate, routePoints],
+  );
+  const polygonPreviewAnalysis = useMemo(
+    () => analyzePolygonPreview(routePoints, polygonAnalysis, polygonAreaAnalysis),
+    [polygonAnalysis, polygonAreaAnalysis, routePoints],
   );
   const cameraCenterCoordinate = useMemo<[number, number]>(
     () => [
@@ -212,6 +218,7 @@ export function MapScreen() {
       <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
         <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
+        <PolygonPreview geoJSON={polygonPreviewAnalysis.geoJSON} />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
       {isLoadingLocation ? (
@@ -281,6 +288,18 @@ export function MapScreen() {
         <Text style={styles.debugText}>Area calculation valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
         <Text style={styles.debugText}>
           Area rejection: {polygonAreaAnalysis.rejectionReason ?? 'None'}
+        </Text>
+        <Text style={styles.debugText}>
+          Polygon preview rendered: {polygonPreviewAnalysis.isRendered ? 'Yes' : 'No'}
+        </Text>
+        <Text style={styles.debugText}>
+          Preview rejection: {polygonPreviewAnalysis.rejectionReason ?? 'None'}
+        </Text>
+        <Text style={styles.debugText}>
+          Fill area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
+        </Text>
+        <Text style={styles.debugText}>
+          Fill point count: {polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}
         </Text>
         <Text style={styles.debugText}>
           Last coordinate:{' '}
