@@ -7,6 +7,7 @@ import { RouteLine } from '../components/map/RouteLine';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import type { Coordinates, GpsPoint } from '../types';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
+import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 
@@ -26,6 +27,10 @@ export function MapScreen() {
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
   const isRouteLineRendered = routeGeoJSON !== null;
   const polygonAnalysis = useMemo(() => analyzePolygonCandidate(routePoints), [routePoints]);
+  const polygonAreaAnalysis = useMemo(
+    () => analyzePolygonArea(routePoints, polygonAnalysis.isCandidate),
+    [polygonAnalysis.isCandidate, routePoints],
+  );
   const cameraCenterCoordinate = useMemo<[number, number]>(
     () => [
       currentLocation?.longitude ?? DEFAULT_MAP_CENTER.longitude,
@@ -268,6 +273,16 @@ export function MapScreen() {
           Polygon rejection: {polygonAnalysis.rejectionReason ?? 'None'}
         </Text>
         <Text style={styles.debugText}>
+          Polygon area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
+        </Text>
+        <Text style={styles.debugText}>
+          Polygon area hectare: {formatAreaHectare(polygonAreaAnalysis.result?.areaHectare ?? null)}
+        </Text>
+        <Text style={styles.debugText}>Area calculation valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
+        <Text style={styles.debugText}>
+          Area rejection: {polygonAreaAnalysis.rejectionReason ?? 'None'}
+        </Text>
+        <Text style={styles.debugText}>
           Last coordinate:{' '}
           {lastRoutePoint
             ? `${lastRoutePoint.latitude.toFixed(6)}, ${lastRoutePoint.longitude.toFixed(6)}`
@@ -289,6 +304,22 @@ function formatMeters(value: number | null): string {
   }
 
   return `${value.toFixed(1)} m`;
+}
+
+function formatAreaSquareMeters(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) {
+    return 'N/A';
+  }
+
+  return `${value.toFixed(1)} m2`;
+}
+
+function formatAreaHectare(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) {
+    return 'N/A';
+  }
+
+  return `${value.toFixed(4)} ha`;
 }
 
 function formatBoundingBoxDebugText(

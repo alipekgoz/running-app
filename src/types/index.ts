@@ -1,6 +1,8 @@
 import type { Coordinates } from './location';
+import type { PolygonAreaResult } from './geo';
 
 export type { Coordinates } from './location';
+export type { PolygonAreaResult } from './geo';
 
 export type GpsPoint = Coordinates & {
   accuracyMeters: number;
