@@ -1,5 +1,5 @@
 import type { GpsPoint } from '../types';
-import { isValidCoordinate } from './geo/calculateBoundingBox';
+import { isValidCoordinate } from './geo/coordinateValidation';
 
 type LineStringGeometry = {
   coordinates: [number, number][];

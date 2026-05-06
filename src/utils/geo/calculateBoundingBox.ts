@@ -1,4 +1,5 @@
 import type { Coordinates } from '../../types';
+import { filterValidCoordinates } from './coordinateValidation';
 
 export type BoundingBox = {
   maxLatitude: number;
@@ -7,24 +8,8 @@ export type BoundingBox = {
   minLongitude: number;
 };
 
-function isFiniteNumber(value: number | null | undefined): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-export function isValidCoordinate(coordinate: Coordinates | null | undefined): coordinate is Coordinates {
-  return (
-    coordinate != null &&
-    isFiniteNumber(coordinate.latitude) &&
-    isFiniteNumber(coordinate.longitude) &&
-    coordinate.latitude >= -90 &&
-    coordinate.latitude <= 90 &&
-    coordinate.longitude >= -180 &&
-    coordinate.longitude <= 180
-  );
-}
-
 export function calculateBoundingBox(coordinates: readonly Coordinates[]): BoundingBox | null {
-  const validCoordinates = coordinates.filter(isValidCoordinate);
+  const validCoordinates = filterValidCoordinates(coordinates);
 
   if (validCoordinates.length === 0) {
     return null;

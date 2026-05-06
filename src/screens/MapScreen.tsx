@@ -7,6 +7,7 @@ import { RouteLine } from '../components/map/RouteLine';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import type { Coordinates, GpsPoint } from '../types';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
+import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 
 if (MAPBOX_ACCESS_TOKEN) {
@@ -24,6 +25,7 @@ export function MapScreen() {
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
   const isRouteLineRendered = routeGeoJSON !== null;
+  const polygonAnalysis = useMemo(() => analyzePolygonCandidate(routePoints), [routePoints]);
   const cameraCenterCoordinate = useMemo<[number, number]>(
     () => [
       currentLocation?.longitude ?? DEFAULT_MAP_CENTER.longitude,
@@ -205,7 +207,7 @@ export function MapScreen() {
       <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
         <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
-        <RouteLine geoJSON={routeGeoJSON} />
+        <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
       {isLoadingLocation ? (
         <View style={styles.overlay}>
@@ -255,6 +257,16 @@ export function MapScreen() {
         <Text style={styles.debugText}>Route point count: {routePoints.length}</Text>
         <Text style={styles.debugText}>Route line rendered: {isRouteLineRendered ? 'Yes' : 'No'}</Text>
         <Text style={styles.debugText}>GeoJSON valid: {routeGeoJSON ? 'Yes' : 'No'}</Text>
+        <Text style={styles.debugText}>Polygon candidate: {polygonAnalysis.isCandidate ? 'Yes' : 'No'}</Text>
+        <Text style={styles.debugText}>
+          Closure distance: {formatMeters(polygonAnalysis.closureDistanceMeters)}
+        </Text>
+        <Text style={styles.debugText}>
+          Route bounding box: {formatBoundingBoxDebugText(polygonAnalysis)}
+        </Text>
+        <Text style={styles.debugText}>
+          Polygon rejection: {polygonAnalysis.rejectionReason ?? 'None'}
+        </Text>
         <Text style={styles.debugText}>
           Last coordinate:{' '}
           {lastRoutePoint
@@ -269,6 +281,28 @@ export function MapScreen() {
       </View>
     </View>
   );
+}
+
+function formatMeters(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) {
+    return 'N/A';
+  }
+
+  return `${value.toFixed(1)} m`;
+}
+
+function formatBoundingBoxDebugText(
+  polygonAnalysis: ReturnType<typeof analyzePolygonCandidate>,
+): string {
+  if (!polygonAnalysis.boundingBox) {
+    return 'N/A';
+  }
+
+  return [
+    `${polygonAnalysis.boundingBox.minLatitude.toFixed(5)}, ${polygonAnalysis.boundingBox.minLongitude.toFixed(5)}`,
+    `${polygonAnalysis.boundingBox.maxLatitude.toFixed(5)}, ${polygonAnalysis.boundingBox.maxLongitude.toFixed(5)}`,
+    `${formatMeters(polygonAnalysis.boundingBoxWidthMeters)} x ${formatMeters(polygonAnalysis.boundingBoxHeightMeters)}`,
+  ].join(' -> ');
 }
 
 function toGpsPoint(position: Location.LocationObject): GpsPoint {

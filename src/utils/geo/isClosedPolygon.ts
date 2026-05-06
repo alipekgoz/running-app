@@ -1,5 +1,5 @@
 import type { Coordinates } from '../../types';
-import { isValidCoordinate } from './calculateBoundingBox';
+import { isValidCoordinate } from './coordinateValidation';
 
 type IsClosedPolygonOptions = {
   minimumPointCount?: number;
