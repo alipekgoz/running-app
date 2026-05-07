@@ -8,6 +8,11 @@ import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import type { Coordinates, GpsPoint, LocalSavedTerritory } from '../types';
+import {
+  clearSavedTerritories as clearSavedTerritoriesFromStorage,
+  loadSavedTerritories,
+  saveSavedTerritories,
+} from '../services/territoryStorageService';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
@@ -29,6 +34,8 @@ export function MapScreen() {
   const [isDebugPanelExpanded, setIsDebugPanelExpanded] = useState(false);
   const [routePoints, setRoutePoints] = useState<GpsPoint[]>([]);
   const [savedTerritories, setSavedTerritories] = useState<LocalSavedTerritory[]>([]);
+  const [territoriesLoading, setTerritoriesLoading] = useState(true);
+  const [territoriesStorageError, setTerritoriesStorageError] = useState<string | null>(null);
   const [lastSaveStatus, setLastSaveStatus] = useState('No save yet.');
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
   const [hasAutoSavedCurrentRoute, setHasAutoSavedCurrentRoute] = useState(false);
@@ -68,6 +75,22 @@ export function MapScreen() {
   );
 
   useEffect(() => {
+    async function hydrateSavedTerritories(): Promise<void> {
+      try {
+        setTerritoriesStorageError(null);
+        const storedTerritories = await loadSavedTerritories();
+
+        setSavedTerritories(storedTerritories);
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown storage load error';
+
+        setTerritoriesStorageError(errorMessage);
+        setSavedTerritories([]);
+      } finally {
+        setTerritoriesLoading(false);
+      }
+    }
+
     async function refreshLocationServicesStatus(): Promise<boolean> {
       const servicesEnabled = await Location.hasServicesEnabledAsync();
 
@@ -146,6 +169,7 @@ export function MapScreen() {
       }
     }
 
+    void hydrateSavedTerritories();
     void loadCurrentLocation();
 
     const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
@@ -193,6 +217,25 @@ export function MapScreen() {
       }
     };
   }, [hasAutoSavedCurrentRoute, territoryPreviewPayload, territoryPreviewSignature]);
+
+  useEffect(() => {
+    if (territoriesLoading) {
+      return;
+    }
+
+    async function persistSavedTerritories(): Promise<void> {
+      try {
+        setTerritoriesStorageError(null);
+        await saveSavedTerritories(savedTerritories);
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown storage save error';
+
+        setTerritoriesStorageError(errorMessage);
+      }
+    }
+
+    void persistSavedTerritories();
+  }, [savedTerritories, territoriesLoading]);
 
   async function startTracking(): Promise<void> {
     try {
@@ -278,6 +321,20 @@ export function MapScreen() {
 
   function openLocationSettings(): void {
     void Linking.openSettings();
+  }
+
+  async function clearSavedTerritories(): Promise<void> {
+    try {
+      setTerritoriesStorageError(null);
+      await clearSavedTerritoriesFromStorage();
+      setSavedTerritories([]);
+      setLastSaveStatus('Cleared saved territories.');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown clear storage error';
+
+      setTerritoriesStorageError(errorMessage);
+      setLastSaveStatus('Failed to clear saved territories.');
+    }
   }
 
   function saveTerritory(trigger: 'auto' | 'manual' = 'manual'): void {
@@ -398,6 +455,18 @@ export function MapScreen() {
       </View>
       <View style={styles.secondaryControls}>
         <Pressable
+          onPress={() => {
+            void clearSavedTerritories();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            styles.clearButton,
+            pressed ? styles.buttonPressed : null,
+          ]}
+        >
+          <Text style={styles.buttonText}>Clear Saved Territories</Text>
+        </Pressable>
+        <Pressable
           disabled={!isTracking}
           onPress={stopTracking}
           style={({ pressed }) => [
@@ -429,6 +498,7 @@ export function MapScreen() {
           <Text style={styles.debugText}>Polygon candidate: {polygonAnalysis.isCandidate ? 'Yes' : 'No'}</Text>
           <Text style={styles.debugText}>Area valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
           <Text style={styles.debugText}>Saved territories: {savedTerritories.length}</Text>
+          <Text style={styles.debugText}>Persisted loaded: {territoriesLoading ? 'Loading' : 'Yes'}</Text>
         </View>
         {isDebugPanelExpanded ? (
           <ScrollView
@@ -472,6 +542,9 @@ export function MapScreen() {
               Fill point count: {polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}
             </Text>
             <Text style={styles.debugText}>Saved territory count: {savedTerritories.length}</Text>
+            <Text style={styles.debugText}>
+              Storage error: {territoriesStorageError ?? 'None'}
+            </Text>
             <Text style={styles.debugText}>
               Last saved area m2: {formatAreaSquareMeters(lastSavedTerritory?.areaM2 ?? null)}
             </Text>
@@ -637,6 +710,9 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     backgroundColor: '#0f766e',
+  },
+  clearButton: {
+    backgroundColor: '#6b7280',
   },
   stopButton: {
     backgroundColor: '#b42318',
