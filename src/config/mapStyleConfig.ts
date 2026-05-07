@@ -22,3 +22,14 @@ export const polygonPreviewOutlineStyle = {
   lineOpacity: 0.9,
   lineWidth: 2,
 } as const;
+
+export const savedTerritoryFillStyle = {
+  fillColor: '#0f766e',
+  fillOpacity: 0.28,
+} as const;
+
+export const savedTerritoryOutlineStyle = {
+  lineColor: '#115e59',
+  lineOpacity: 0.95,
+  lineWidth: 2,
+} as const;

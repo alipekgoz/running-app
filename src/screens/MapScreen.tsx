@@ -5,10 +5,12 @@ import { ActivityIndicator, AppState, Linking, Pressable, ScrollView, StyleSheet
 
 import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
+import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
-import type { Coordinates, GpsPoint } from '../types';
+import type { Coordinates, GpsPoint, LocalSavedTerritory } from '../types';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
+import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
@@ -26,8 +28,12 @@ export function MapScreen() {
   const [isTracking, setIsTracking] = useState(false);
   const [isDebugPanelExpanded, setIsDebugPanelExpanded] = useState(false);
   const [routePoints, setRoutePoints] = useState<GpsPoint[]>([]);
+  const [savedTerritories, setSavedTerritories] = useState<LocalSavedTerritory[]>([]);
+  const [lastSaveStatus, setLastSaveStatus] = useState('No save yet.');
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
+  const [hasAutoSavedCurrentRoute, setHasAutoSavedCurrentRoute] = useState(false);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
   const isRouteLineRendered = routeGeoJSON !== null;
   const polygonAnalysis = useMemo(() => analyzePolygonCandidate(routePoints), [routePoints]);
@@ -39,6 +45,11 @@ export function MapScreen() {
     () => analyzePolygonPreview(routePoints, polygonAnalysis, polygonAreaAnalysis),
     [polygonAnalysis, polygonAreaAnalysis, routePoints],
   );
+  const territoryPreviewPayload = useMemo(
+    () => buildTerritoryPreviewPayload(routePoints, polygonAreaAnalysis, polygonPreviewAnalysis),
+    [polygonAreaAnalysis, polygonPreviewAnalysis, routePoints],
+  );
+  const isSaveTerritoryEnabled = territoryPreviewPayload !== null;
   const cameraCenterCoordinate = useMemo<[number, number]>(
     () => [
       currentLocation?.longitude ?? DEFAULT_MAP_CENTER.longitude,
@@ -47,6 +58,14 @@ export function MapScreen() {
     [currentLocation],
   );
   const lastRoutePoint = routePoints.at(-1) ?? null;
+  const lastSavedTerritory = savedTerritories.at(-1) ?? null;
+  const territoryPreviewSignature = useMemo(
+    () =>
+      territoryPreviewPayload
+        ? `${territoryPreviewPayload.areaM2.toFixed(2)}:${territoryPreviewPayload.sourceRoutePointCount}`
+        : null,
+    [territoryPreviewPayload],
+  );
 
   useEffect(() => {
     async function refreshLocationServicesStatus(): Promise<boolean> {
@@ -139,15 +158,48 @@ export function MapScreen() {
 
     return () => {
       locationSubscriptionRef.current?.remove();
+      autoSaveTimeoutRef.current && clearTimeout(autoSaveTimeoutRef.current);
       appStateSubscription.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (hasAutoSavedCurrentRoute) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      setLastSaveStatus('Auto-save skipped: already saved this route');
+      return;
+    }
+
+    if (!territoryPreviewPayload || !territoryPreviewSignature) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      saveTerritory('auto');
+      autoSaveTimeoutRef.current = null;
+    }, 2000);
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+    };
+  }, [hasAutoSavedCurrentRoute, territoryPreviewPayload, territoryPreviewSignature]);
 
   async function startTracking(): Promise<void> {
     try {
       setLocationError(null);
       setLastRejectedReason(null);
       setRoutePoints([]);
+      setHasAutoSavedCurrentRoute(false);
       setLocationDebugText('Starting GPS tracking...');
 
       const permission = await Location.requestForegroundPermissionsAsync();
@@ -228,6 +280,43 @@ export function MapScreen() {
     void Linking.openSettings();
   }
 
+  function saveTerritory(trigger: 'auto' | 'manual' = 'manual'): void {
+    if (!territoryPreviewPayload || !territoryPreviewSignature) {
+      setLastSaveStatus('Preview is not ready to save.');
+      return;
+    }
+
+    setSavedTerritories((previousTerritories) => {
+      const lastSaved = previousTerritories.at(-1) ?? null;
+
+      if (
+        lastSaved &&
+        Math.abs(lastSaved.areaM2 - territoryPreviewPayload.areaM2) < 0.01 &&
+        lastSaved.sourceRoutePointCount === territoryPreviewPayload.sourceRoutePointCount
+      ) {
+        setLastSaveStatus(trigger === 'auto' ? 'Auto-save skipped: already saved.' : 'This territory is already saved.');
+        return previousTerritories;
+      }
+
+      const nextTerritory: LocalSavedTerritory = {
+        ...territoryPreviewPayload,
+        id: `${territoryPreviewPayload.createdAt}-${territoryPreviewPayload.sourceRoutePointCount}`,
+        status: 'local_saved',
+      };
+
+      if (trigger === 'auto') {
+        setHasAutoSavedCurrentRoute(true);
+      }
+
+      setLastSaveStatus(
+        trigger === 'auto'
+          ? `Auto-saved territory ${previousTerritories.length + 1}.`
+          : `Saved territory ${previousTerritories.length + 1}.`,
+      );
+      return [...previousTerritories, nextTerritory];
+    });
+  }
+
   if (!MAPBOX_ACCESS_TOKEN) {
     return (
       <View style={styles.messageContainer}>
@@ -244,6 +333,7 @@ export function MapScreen() {
       <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
         <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
+        <SavedTerritoriesLayer territories={savedTerritories} />
         <PolygonPreview geoJSON={polygonPreviewAnalysis.geoJSON} />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
@@ -292,6 +382,22 @@ export function MapScreen() {
           <Text style={styles.buttonText}>Start</Text>
         </Pressable>
         <Pressable
+          disabled={!isSaveTerritoryEnabled}
+          onPress={() => {
+            saveTerritory('manual');
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            styles.saveButton,
+            !isSaveTerritoryEnabled ? styles.buttonDisabled : null,
+            pressed && isSaveTerritoryEnabled ? styles.buttonPressed : null,
+          ]}
+        >
+          <Text style={styles.buttonText}>Save Territory</Text>
+        </Pressable>
+      </View>
+      <View style={styles.secondaryControls}>
+        <Pressable
           disabled={!isTracking}
           onPress={stopTracking}
           style={({ pressed }) => [
@@ -322,6 +428,7 @@ export function MapScreen() {
           <Text style={styles.debugText}>Accepted points: {routePoints.length}</Text>
           <Text style={styles.debugText}>Polygon candidate: {polygonAnalysis.isCandidate ? 'Yes' : 'No'}</Text>
           <Text style={styles.debugText}>Area valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
+          <Text style={styles.debugText}>Saved territories: {savedTerritories.length}</Text>
         </View>
         {isDebugPanelExpanded ? (
           <ScrollView
@@ -364,6 +471,12 @@ export function MapScreen() {
             <Text style={styles.debugText}>
               Fill point count: {polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}
             </Text>
+            <Text style={styles.debugText}>Saved territory count: {savedTerritories.length}</Text>
+            <Text style={styles.debugText}>
+              Last saved area m2: {formatAreaSquareMeters(lastSavedTerritory?.areaM2 ?? null)}
+            </Text>
+            <Text style={styles.debugText}>Save button enabled: {isSaveTerritoryEnabled ? 'Yes' : 'No'}</Text>
+            <Text style={styles.debugText}>Last save status: {lastSaveStatus}</Text>
             <Text style={styles.debugText}>
               Last coordinate:{' '}
               {lastRoutePoint
@@ -493,6 +606,14 @@ const styles = StyleSheet.create({
     right: 16,
     top: 96,
   },
+  secondaryControls: {
+    flexDirection: 'row',
+    gap: 12,
+    left: 16,
+    position: 'absolute',
+    right: 16,
+    top: 152,
+  },
   button: {
     alignItems: 'center',
     borderRadius: 10,
@@ -513,6 +634,9 @@ const styles = StyleSheet.create({
   },
   startButton: {
     backgroundColor: '#167c45',
+  },
+  saveButton: {
+    backgroundColor: '#0f766e',
   },
   stopButton: {
     backgroundColor: '#b42318',

@@ -7,3 +7,8 @@ export type TerritoryPreviewPayload = {
   createdAt: string;
   sourceRoutePointCount: number;
 };
+
+export type LocalSavedTerritory = TerritoryPreviewPayload & {
+  id: string;
+  status: 'local_saved';
+};
