@@ -1,7 +1,7 @@
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
@@ -20,9 +20,11 @@ if (MAPBOX_ACCESS_TOKEN) {
 export function MapScreen() {
   const [currentLocation, setCurrentLocation] = useState<Coordinates | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [isLocationServicesEnabled, setIsLocationServicesEnabled] = useState(true);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const [locationDebugText, setLocationDebugText] = useState('Waiting for location request...');
   const [isTracking, setIsTracking] = useState(false);
+  const [isDebugPanelExpanded, setIsDebugPanelExpanded] = useState(false);
   const [routePoints, setRoutePoints] = useState<GpsPoint[]>([]);
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
@@ -47,6 +49,18 @@ export function MapScreen() {
   const lastRoutePoint = routePoints.at(-1) ?? null;
 
   useEffect(() => {
+    async function refreshLocationServicesStatus(): Promise<boolean> {
+      const servicesEnabled = await Location.hasServicesEnabledAsync();
+
+      setIsLocationServicesEnabled(servicesEnabled);
+
+      if (!servicesEnabled) {
+        setLocationDebugText('Location services are disabled on the device.');
+      }
+
+      return servicesEnabled;
+    }
+
     async function loadCurrentLocation() {
       try {
         setLocationError(null);
@@ -62,14 +76,12 @@ export function MapScreen() {
 
         setLocationDebugText('Checking device location services...');
 
-        const servicesEnabled = await Location.hasServicesEnabledAsync();
+        const servicesEnabled = await refreshLocationServicesStatus();
         const providerStatus = await Location.getProviderStatusAsync();
 
         if (!servicesEnabled) {
-          setLocationError('Location services are turned off on the emulator. Enable device location and try again.');
-          setLocationDebugText(
-            `Services off. GPS: ${String(providerStatus.gpsAvailable)} Network: ${String(providerStatus.networkAvailable)}`,
-          );
+          setLocationError(null);
+          setLocationDebugText(`Services off. GPS: ${String(providerStatus.gpsAvailable)} Network: ${String(providerStatus.networkAvailable)}`);
           return;
         }
 
@@ -117,8 +129,17 @@ export function MapScreen() {
 
     void loadCurrentLocation();
 
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState !== 'active') {
+        return;
+      }
+
+      void refreshLocationServicesStatus();
+    });
+
     return () => {
       locationSubscriptionRef.current?.remove();
+      appStateSubscription.remove();
     };
   }, []);
 
@@ -138,9 +159,10 @@ export function MapScreen() {
       }
 
       const servicesEnabled = await Location.hasServicesEnabledAsync();
+      setIsLocationServicesEnabled(servicesEnabled);
 
       if (!servicesEnabled) {
-        setLocationError('Location services are turned off. Turn them on before starting tracking.');
+        setLocationError(null);
         setLocationDebugText('Tracking could not start because location services are disabled.');
         return;
       }
@@ -202,6 +224,10 @@ export function MapScreen() {
     setLocationDebugText('GPS tracking stopped.');
   }
 
+  function openLocationSettings(): void {
+    void Linking.openSettings();
+  }
+
   if (!MAPBOX_ACCESS_TOKEN) {
     return (
       <View style={styles.messageContainer}>
@@ -225,6 +251,23 @@ export function MapScreen() {
         <View style={styles.overlay}>
           <ActivityIndicator size="small" />
           <Text style={styles.overlayText}>Getting current location...</Text>
+        </View>
+      ) : null}
+      {!isLocationServicesEnabled ? (
+        <View style={styles.overlay}>
+          <Text style={styles.overlayTitle}>Konum servisi kapalı</Text>
+          <Text style={styles.overlayText}>
+            Telefon konum servisi kapalı. GPS takibi için konumu açmalısın.
+          </Text>
+          <Pressable
+            onPress={openLocationSettings}
+            style={({ pressed }) => [
+              styles.settingsButton,
+              pressed ? styles.buttonPressed : null,
+            ]}
+          >
+            <Text style={styles.buttonText}>Konum Ayarlarini Ac</Text>
+          </Pressable>
         </View>
       ) : null}
       {locationError ? (
@@ -262,56 +305,78 @@ export function MapScreen() {
         </Pressable>
       </View>
       <View style={styles.debugPanel}>
-        <Text style={styles.debugTitle}>Tracking Debug</Text>
-        <Text style={styles.debugText}>{locationDebugText}</Text>
-        <Text style={styles.debugText}>Tracking active: {isTracking ? 'Yes' : 'No'}</Text>
-        <Text style={styles.debugText}>Accepted points: {routePoints.length}</Text>
-        <Text style={styles.debugText}>Route point count: {routePoints.length}</Text>
-        <Text style={styles.debugText}>Route line rendered: {isRouteLineRendered ? 'Yes' : 'No'}</Text>
-        <Text style={styles.debugText}>GeoJSON valid: {routeGeoJSON ? 'Yes' : 'No'}</Text>
-        <Text style={styles.debugText}>Polygon candidate: {polygonAnalysis.isCandidate ? 'Yes' : 'No'}</Text>
-        <Text style={styles.debugText}>
-          Closure distance: {formatMeters(polygonAnalysis.closureDistanceMeters)}
-        </Text>
-        <Text style={styles.debugText}>
-          Route bounding box: {formatBoundingBoxDebugText(polygonAnalysis)}
-        </Text>
-        <Text style={styles.debugText}>
-          Polygon rejection: {polygonAnalysis.rejectionReason ?? 'None'}
-        </Text>
-        <Text style={styles.debugText}>
-          Polygon area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
-        </Text>
-        <Text style={styles.debugText}>
-          Polygon area hectare: {formatAreaHectare(polygonAreaAnalysis.result?.areaHectare ?? null)}
-        </Text>
-        <Text style={styles.debugText}>Area calculation valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
-        <Text style={styles.debugText}>
-          Area rejection: {polygonAreaAnalysis.rejectionReason ?? 'None'}
-        </Text>
-        <Text style={styles.debugText}>
-          Polygon preview rendered: {polygonPreviewAnalysis.isRendered ? 'Yes' : 'No'}
-        </Text>
-        <Text style={styles.debugText}>
-          Preview rejection: {polygonPreviewAnalysis.rejectionReason ?? 'None'}
-        </Text>
-        <Text style={styles.debugText}>
-          Fill area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
-        </Text>
-        <Text style={styles.debugText}>
-          Fill point count: {polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}
-        </Text>
-        <Text style={styles.debugText}>
-          Last coordinate:{' '}
-          {lastRoutePoint
-            ? `${lastRoutePoint.latitude.toFixed(6)}, ${lastRoutePoint.longitude.toFixed(6)}`
-            : currentLocation
-              ? `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`
-              : 'No location yet'}
-        </Text>
-        <Text style={styles.debugText}>
-          Last rejected reason: {lastRejectedReason ?? 'None'}
-        </Text>
+        <Pressable
+          onPress={() => {
+            setIsDebugPanelExpanded((previousValue) => !previousValue);
+          }}
+          style={({ pressed }) => [
+            styles.debugHeader,
+            pressed ? styles.buttonPressed : null,
+          ]}
+        >
+          <Text style={styles.debugTitle}>Tracking Debug</Text>
+          <Text style={styles.debugToggleText}>{isDebugPanelExpanded ? 'Hide' : 'Show'}</Text>
+        </Pressable>
+        <View style={styles.debugSummary}>
+          <Text style={styles.debugText}>Tracking active: {isTracking ? 'Yes' : 'No'}</Text>
+          <Text style={styles.debugText}>Accepted points: {routePoints.length}</Text>
+          <Text style={styles.debugText}>Polygon candidate: {polygonAnalysis.isCandidate ? 'Yes' : 'No'}</Text>
+          <Text style={styles.debugText}>Area valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
+        </View>
+        {isDebugPanelExpanded ? (
+          <ScrollView
+            contentContainerStyle={styles.debugScrollContent}
+            showsVerticalScrollIndicator={false}
+            style={styles.debugScrollView}
+          >
+            <Text style={styles.debugText}>{locationDebugText}</Text>
+            <Text style={styles.debugText}>Route point count: {routePoints.length}</Text>
+            <Text style={styles.debugText}>Route line rendered: {isRouteLineRendered ? 'Yes' : 'No'}</Text>
+            <Text style={styles.debugText}>GeoJSON valid: {routeGeoJSON ? 'Yes' : 'No'}</Text>
+            <Text style={styles.debugText}>
+              Closure distance: {formatMeters(polygonAnalysis.closureDistanceMeters)}
+            </Text>
+            <Text style={styles.debugText}>
+              Route bounding box: {formatBoundingBoxDebugText(polygonAnalysis)}
+            </Text>
+            <Text style={styles.debugText}>
+              Polygon rejection: {polygonAnalysis.rejectionReason ?? 'None'}
+            </Text>
+            <Text style={styles.debugText}>
+              Polygon area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
+            </Text>
+            <Text style={styles.debugText}>
+              Polygon area hectare: {formatAreaHectare(polygonAreaAnalysis.result?.areaHectare ?? null)}
+            </Text>
+            <Text style={styles.debugText}>Area calculation valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
+            <Text style={styles.debugText}>
+              Area rejection: {polygonAreaAnalysis.rejectionReason ?? 'None'}
+            </Text>
+            <Text style={styles.debugText}>
+              Polygon preview rendered: {polygonPreviewAnalysis.isRendered ? 'Yes' : 'No'}
+            </Text>
+            <Text style={styles.debugText}>
+              Preview rejection: {polygonPreviewAnalysis.rejectionReason ?? 'None'}
+            </Text>
+            <Text style={styles.debugText}>
+              Fill area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
+            </Text>
+            <Text style={styles.debugText}>
+              Fill point count: {polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}
+            </Text>
+            <Text style={styles.debugText}>
+              Last coordinate:{' '}
+              {lastRoutePoint
+                ? `${lastRoutePoint.latitude.toFixed(6)}, ${lastRoutePoint.longitude.toFixed(6)}`
+                : currentLocation
+                  ? `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`
+                  : 'No location yet'}
+            </Text>
+            <Text style={styles.debugText}>
+              Last rejected reason: {lastRejectedReason ?? 'None'}
+            </Text>
+          </ScrollView>
+        ) : null}
       </View>
     </View>
   );
@@ -411,6 +476,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  settingsButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: '#175cd3',
+    borderRadius: 10,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
   controls: {
     flexDirection: 'row',
     gap: 12,
@@ -448,14 +522,37 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     bottom: 16,
     left: 16,
-    padding: 12,
     position: 'absolute',
     right: 16,
+  },
+  debugHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingTop: 12,
+  },
+  debugScrollContent: {
+    paddingBottom: 12,
+    paddingHorizontal: 12,
+  },
+  debugScrollView: {
+    maxHeight: '35%',
+  },
+  debugSummary: {
+    paddingBottom: 12,
+    paddingHorizontal: 12,
+    paddingTop: 4,
   },
   debugText: {
     color: '#f3f3f3',
     fontSize: 13,
     marginTop: 4,
+  },
+  debugToggleText: {
+    color: '#d0d5dd',
+    fontSize: 13,
+    fontWeight: '600',
   },
   debugTitle: {
     color: '#ffffff',
