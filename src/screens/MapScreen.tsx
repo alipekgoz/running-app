@@ -8,16 +8,19 @@ import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import type { Coordinates, GpsPoint, LocalSavedTerritory } from '../types';
+import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
   clearSavedTerritories as clearSavedTerritoriesFromStorage,
   loadSavedTerritories,
   saveSavedTerritories,
 } from '../services/territoryStorageService';
+import { isBackendConfigured, uploadTerritories } from '../services/territoryBackendService';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
+import { createId } from '../utils/createId';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 
 if (MAPBOX_ACCESS_TOKEN) {
@@ -37,6 +40,7 @@ export function MapScreen() {
   const [territoriesLoading, setTerritoriesLoading] = useState(true);
   const [territoriesStorageError, setTerritoriesStorageError] = useState<string | null>(null);
   const [lastSaveStatus, setLastSaveStatus] = useState('No save yet.');
+  const [lastSyncStatus, setLastSyncStatus] = useState('No sync yet.');
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
   const [hasAutoSavedCurrentRoute, setHasAutoSavedCurrentRoute] = useState(false);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
@@ -73,6 +77,9 @@ export function MapScreen() {
         : null,
     [territoryPreviewPayload],
   );
+  const supabaseConfigStatus = useMemo(() => getSupabaseConfigStatus(), []);
+  const backendConfigured = isBackendConfigured();
+  const isSyncEnabled = backendConfigured && savedTerritories.length > 0;
 
   useEffect(() => {
     async function hydrateSavedTerritories(): Promise<void> {
@@ -337,6 +344,17 @@ export function MapScreen() {
     }
   }
 
+  async function syncLocalTerritories(): Promise<void> {
+    if (!backendConfigured) {
+      setLastSyncStatus('Backend config missing.');
+      return;
+    }
+
+    const result = await uploadTerritories(savedTerritories);
+
+    setLastSyncStatus(result.success ? result.message : `Sync failed: ${result.message}`);
+  }
+
   function saveTerritory(trigger: 'auto' | 'manual' = 'manual'): void {
     if (!territoryPreviewPayload || !territoryPreviewSignature) {
       setLastSaveStatus('Preview is not ready to save.');
@@ -357,7 +375,7 @@ export function MapScreen() {
 
       const nextTerritory: LocalSavedTerritory = {
         ...territoryPreviewPayload,
-        id: `${territoryPreviewPayload.createdAt}-${territoryPreviewPayload.sourceRoutePointCount}`,
+        id: createId(),
         status: 'local_saved',
       };
 
@@ -455,6 +473,20 @@ export function MapScreen() {
       </View>
       <View style={styles.secondaryControls}>
         <Pressable
+          disabled={!isSyncEnabled}
+          onPress={() => {
+            void syncLocalTerritories();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            styles.syncButton,
+            !isSyncEnabled ? styles.buttonDisabled : null,
+            pressed && isSyncEnabled ? styles.buttonPressed : null,
+          ]}
+        >
+          <Text style={styles.buttonText}>Sync Local Territories</Text>
+        </Pressable>
+        <Pressable
           onPress={() => {
             void clearSavedTerritories();
           }}
@@ -499,6 +531,7 @@ export function MapScreen() {
           <Text style={styles.debugText}>Area valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
           <Text style={styles.debugText}>Saved territories: {savedTerritories.length}</Text>
           <Text style={styles.debugText}>Persisted loaded: {territoriesLoading ? 'Loading' : 'Yes'}</Text>
+          <Text style={styles.debugText}>Backend configured: {backendConfigured ? 'Yes' : 'No'}</Text>
         </View>
         {isDebugPanelExpanded ? (
           <ScrollView
@@ -544,6 +577,11 @@ export function MapScreen() {
             <Text style={styles.debugText}>Saved territory count: {savedTerritories.length}</Text>
             <Text style={styles.debugText}>
               Storage error: {territoriesStorageError ?? 'None'}
+            </Text>
+            <Text style={styles.debugText}>Last sync status: {lastSyncStatus}</Text>
+            <Text style={styles.debugText}>Upload button enabled: {isSyncEnabled ? 'Yes' : 'No'}</Text>
+            <Text style={styles.debugText}>
+              Supabase env status: {supabaseConfigStatus.isConfigured ? 'Configured' : 'Missing values'}
             </Text>
             <Text style={styles.debugText}>
               Last saved area m2: {formatAreaSquareMeters(lastSavedTerritory?.areaM2 ?? null)}
@@ -713,6 +751,9 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     backgroundColor: '#6b7280',
+  },
+  syncButton: {
+    backgroundColor: '#7c3aed',
   },
   stopButton: {
     backgroundColor: '#b42318',
