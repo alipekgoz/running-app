@@ -1,12 +1,14 @@
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { GameHUD } from '../components/hud/GameHUD';
 import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
+import { uiColors, uiRadius, uiSpacing, uiTypography } from '../config/uiConfig';
 import type { Coordinates, GpsPoint, LocalSavedTerritory, PlayerProfile } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
@@ -89,6 +91,79 @@ export function MapScreen() {
   const supabaseConfigStatus = useMemo(() => getSupabaseConfigStatus(), []);
   const backendConfigured = isBackendConfigured();
   const isSyncEnabled = backendConfigured && savedTerritories.length > 0;
+  const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
+  const playerCreatedAtLabel = useMemo(
+    () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
+    [currentPlayerProfile?.createdAt],
+  );
+  const areaM2Label = useMemo(
+    () => formatAreaMetricValue(polygonAreaAnalysis.result?.areaM2 ?? null, 1, '0.0'),
+    [polygonAreaAnalysis.result?.areaM2],
+  );
+  const areaHectareLabel = useMemo(
+    () => formatAreaMetricValue(polygonAreaAnalysis.result?.areaHectare ?? null, 4, '0.0000'),
+    [polygonAreaAnalysis.result?.areaHectare],
+  );
+  const gpsReady = currentLocation !== null && !locationError && isLocationServicesEnabled;
+  const debugLines = useMemo(
+    () => [
+      `Location: ${locationDebugText}`,
+      `Route point count: ${routePoints.length}`,
+      `Route line rendered: ${isRouteLineRendered ? 'Yes' : 'No'}`,
+      `GeoJSON valid: ${routeGeoJSON ? 'Yes' : 'No'}`,
+      `Closure distance: ${formatMeters(polygonAnalysis.closureDistanceMeters)}`,
+      `Route bounding box: ${formatBoundingBoxDebugText(polygonAnalysis)}`,
+      `Polygon rejection: ${polygonAnalysis.rejectionReason ?? 'None'}`,
+      `Polygon area m2: ${formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}`,
+      `Polygon area hectare: ${formatAreaHectare(polygonAreaAnalysis.result?.areaHectare ?? null)}`,
+      `Area calculation valid: ${polygonAreaAnalysis.isValid ? 'Yes' : 'No'}`,
+      `Area rejection: ${polygonAreaAnalysis.rejectionReason ?? 'None'}`,
+      `Preview rendered: ${polygonPreviewAnalysis.isRendered ? 'Yes' : 'No'}`,
+      `Preview rejection: ${polygonPreviewAnalysis.rejectionReason ?? 'None'}`,
+      `Fill point count: ${polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}`,
+      `Saved territory count: ${savedTerritories.length}`,
+      `Storage error: ${territoriesStorageError ?? 'None'}`,
+      `Current player id: ${currentPlayerProfile?.playerId ?? 'Unavailable'}`,
+      `Player loaded: ${isPlayerLoaded ? 'Yes' : 'No'}`,
+      `Player created at: ${currentPlayerProfile?.createdAt ?? 'Unavailable'}`,
+      `Player last seen at: ${currentPlayerProfile?.lastSeenAt ?? 'Unavailable'}`,
+      `Player storage valid: ${isPlayerStorageValid ? 'Yes' : 'No'}`,
+      `Player app version: ${currentPlayerProfile?.appVersion ?? 'Unavailable'}`,
+      `Player identity status: ${playerIdentityStatus}`,
+      `Last sync status: ${lastSyncStatus}`,
+      `Upload button enabled: ${isSyncEnabled ? 'Yes' : 'No'}`,
+      `Supabase env status: ${supabaseConfigStatus.isConfigured ? 'Configured' : 'Missing values'}`,
+      `Last saved area m2: ${formatAreaSquareMeters(lastSavedTerritory?.areaM2 ?? null)}`,
+      `Save button enabled: ${isSaveTerritoryEnabled ? 'Yes' : 'No'}`,
+      `Last save status: ${lastSaveStatus}`,
+      `Last coordinate: ${formatCoordinateLabel(lastRoutePoint, currentLocation)}`,
+      `Last rejected reason: ${lastRejectedReason ?? 'None'}`,
+    ],
+    [
+      currentLocation,
+      currentPlayerProfile,
+      isPlayerLoaded,
+      isPlayerStorageValid,
+      isRouteLineRendered,
+      isSaveTerritoryEnabled,
+      isSyncEnabled,
+      lastRejectedReason,
+      lastRoutePoint,
+      lastSaveStatus,
+      lastSavedTerritory?.areaM2,
+      lastSyncStatus,
+      locationDebugText,
+      playerIdentityStatus,
+      polygonAnalysis,
+      polygonAreaAnalysis,
+      polygonPreviewAnalysis,
+      routeGeoJSON,
+      routePoints.length,
+      savedTerritories.length,
+      supabaseConfigStatus.isConfigured,
+      territoriesStorageError,
+    ],
+  );
 
   useEffect(() => {
     async function hydrateSavedTerritories(): Promise<void> {
@@ -485,194 +560,42 @@ export function MapScreen() {
           <Text style={styles.overlayText}>{locationError}</Text>
         </View>
       ) : null}
-      <View style={styles.controls}>
-        <Pressable
-          disabled={isTracking}
-          onPress={() => {
-            void startTracking();
-          }}
-          style={({ pressed }) => [
-            styles.button,
-            styles.startButton,
-            isTracking ? styles.buttonDisabled : null,
-            pressed && !isTracking ? styles.buttonPressed : null,
-          ]}
-        >
-          <Text style={styles.buttonText}>Start</Text>
-        </Pressable>
-        <Pressable
-          disabled={!isSaveTerritoryEnabled}
-          onPress={() => {
-            saveTerritory('manual');
-          }}
-          style={({ pressed }) => [
-            styles.button,
-            styles.saveButton,
-            !isSaveTerritoryEnabled ? styles.buttonDisabled : null,
-            pressed && isSaveTerritoryEnabled ? styles.buttonPressed : null,
-          ]}
-        >
-          <Text style={styles.buttonText}>Save Territory</Text>
-        </Pressable>
-      </View>
-      <View style={styles.secondaryControls}>
-        <Pressable
-          disabled={!isSyncEnabled}
-          onPress={() => {
-            void syncLocalTerritories();
-          }}
-          style={({ pressed }) => [
-            styles.button,
-            styles.syncButton,
-            !isSyncEnabled ? styles.buttonDisabled : null,
-            pressed && isSyncEnabled ? styles.buttonPressed : null,
-          ]}
-        >
-          <Text style={styles.buttonText}>Sync Local Territories</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => {
-            void clearSavedTerritories();
-          }}
-          style={({ pressed }) => [
-            styles.button,
-            styles.clearButton,
-            pressed ? styles.buttonPressed : null,
-          ]}
-        >
-          <Text style={styles.buttonText}>Clear Saved Territories</Text>
-        </Pressable>
-        <Pressable
-          disabled={!isTracking}
-          onPress={stopTracking}
-          style={({ pressed }) => [
-            styles.button,
-            styles.stopButton,
-            !isTracking ? styles.buttonDisabled : null,
-            pressed && isTracking ? styles.buttonPressed : null,
-          ]}
-        >
-          <Text style={styles.buttonText}>Stop</Text>
-        </Pressable>
-      </View>
-      <View style={styles.debugPanel}>
-        <Pressable
-          onPress={() => {
-            setIsDebugPanelExpanded((previousValue) => !previousValue);
-          }}
-          style={({ pressed }) => [
-            styles.debugHeader,
-            pressed ? styles.buttonPressed : null,
-          ]}
-        >
-          <Text style={styles.debugTitle}>Tracking Debug</Text>
-          <Text style={styles.debugToggleText}>{isDebugPanelExpanded ? 'Hide' : 'Show'}</Text>
-        </Pressable>
-        <View style={styles.debugSummary}>
-          <Text style={styles.debugText}>Tracking active: {isTracking ? 'Yes' : 'No'}</Text>
-          <Text style={styles.debugText}>Accepted points: {routePoints.length}</Text>
-          <Text style={styles.debugText}>Polygon candidate: {polygonAnalysis.isCandidate ? 'Yes' : 'No'}</Text>
-          <Text style={styles.debugText}>Area valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
-          <Text style={styles.debugText}>Saved territories: {savedTerritories.length}</Text>
-          <Text style={styles.debugText}>Persisted loaded: {territoriesLoading ? 'Loading' : 'Yes'}</Text>
-          <Text style={styles.debugText}>Backend configured: {backendConfigured ? 'Yes' : 'No'}</Text>
-          <Text style={styles.debugText}>Player loaded: {isPlayerLoaded ? 'Yes' : 'No'}</Text>
-        </View>
-        {isDebugPanelExpanded ? (
-          <ScrollView
-            contentContainerStyle={styles.debugScrollContent}
-            showsVerticalScrollIndicator={false}
-            style={styles.debugScrollView}
-          >
-            <Text style={styles.debugText}>{locationDebugText}</Text>
-            <Text style={styles.debugText}>Route point count: {routePoints.length}</Text>
-            <Text style={styles.debugText}>Route line rendered: {isRouteLineRendered ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>GeoJSON valid: {routeGeoJSON ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>
-              Closure distance: {formatMeters(polygonAnalysis.closureDistanceMeters)}
-            </Text>
-            <Text style={styles.debugText}>
-              Route bounding box: {formatBoundingBoxDebugText(polygonAnalysis)}
-            </Text>
-            <Text style={styles.debugText}>
-              Polygon rejection: {polygonAnalysis.rejectionReason ?? 'None'}
-            </Text>
-            <Text style={styles.debugText}>
-              Polygon area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
-            </Text>
-            <Text style={styles.debugText}>
-              Polygon area hectare: {formatAreaHectare(polygonAreaAnalysis.result?.areaHectare ?? null)}
-            </Text>
-            <Text style={styles.debugText}>Area calculation valid: {polygonAreaAnalysis.isValid ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>
-              Area rejection: {polygonAreaAnalysis.rejectionReason ?? 'None'}
-            </Text>
-            <Text style={styles.debugText}>
-              Polygon preview rendered: {polygonPreviewAnalysis.isRendered ? 'Yes' : 'No'}
-            </Text>
-            <Text style={styles.debugText}>
-              Preview rejection: {polygonPreviewAnalysis.rejectionReason ?? 'None'}
-            </Text>
-            <Text style={styles.debugText}>
-              Fill area m2: {formatAreaSquareMeters(polygonAreaAnalysis.result?.areaM2 ?? null)}
-            </Text>
-            <Text style={styles.debugText}>
-              Fill point count: {polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}
-            </Text>
-            <Text style={styles.debugText}>Saved territory count: {savedTerritories.length}</Text>
-            <Text style={styles.debugText}>
-              Storage error: {territoriesStorageError ?? 'None'}
-            </Text>
-            <Text style={styles.debugText}>Current player id: {currentPlayerProfile?.playerId ?? 'Unavailable'}</Text>
-            <Text style={styles.debugText}>Player loaded: {isPlayerLoaded ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>
-              Player created at: {currentPlayerProfile?.createdAt ?? 'Unavailable'}
-            </Text>
-            <Text style={styles.debugText}>
-              Player last seen at: {currentPlayerProfile?.lastSeenAt ?? 'Unavailable'}
-            </Text>
-            <Text style={styles.debugText}>
-              Player storage valid: {isPlayerStorageValid ? 'Yes' : 'No'}
-            </Text>
-            <Text style={styles.debugText}>
-              Player app version: {currentPlayerProfile?.appVersion ?? 'Unavailable'}
-            </Text>
-            <Text style={styles.debugText}>Player identity status: {playerIdentityStatus}</Text>
-            <Text style={styles.debugText}>Last sync status: {lastSyncStatus}</Text>
-            <Text style={styles.debugText}>Upload button enabled: {isSyncEnabled ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>
-              Supabase env status: {supabaseConfigStatus.isConfigured ? 'Configured' : 'Missing values'}
-            </Text>
-            <Text style={styles.debugText}>
-              Last saved area m2: {formatAreaSquareMeters(lastSavedTerritory?.areaM2 ?? null)}
-            </Text>
-            <Text style={styles.debugText}>Save button enabled: {isSaveTerritoryEnabled ? 'Yes' : 'No'}</Text>
-            <Text style={styles.debugText}>Last save status: {lastSaveStatus}</Text>
-            <Text style={styles.debugText}>
-              Last coordinate:{' '}
-              {lastRoutePoint
-                ? `${lastRoutePoint.latitude.toFixed(6)}, ${lastRoutePoint.longitude.toFixed(6)}`
-                : currentLocation
-                  ? `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`
-                  : 'No location yet'}
-            </Text>
-            <Text style={styles.debugText}>
-              Last rejected reason: {lastRejectedReason ?? 'None'}
-            </Text>
-            <Pressable
-              onPress={() => {
-                void resetPlayerIdentity();
-              }}
-              style={({ pressed }) => [
-                styles.resetPlayerButton,
-                pressed ? styles.buttonPressed : null,
-              ]}
-            >
-              <Text style={styles.buttonText}>Reset Player Identity</Text>
-            </Pressable>
-          </ScrollView>
-        ) : null}
-      </View>
+      <GameHUD
+        areaHectareLabel={areaHectareLabel}
+        areaM2Label={areaM2Label}
+        backendConfigured={backendConfigured}
+        canSaveTerritory={isSaveTerritoryEnabled}
+        canSync={isSyncEnabled}
+        debugLines={debugLines}
+        debugOpen={isDebugPanelExpanded}
+        gpsReady={gpsReady}
+        onClearTerritories={() => {
+          void clearSavedTerritories();
+        }}
+        onResetIdentity={() => {
+          void resetPlayerIdentity();
+        }}
+        onSaveTerritory={() => {
+          saveTerritory('manual');
+        }}
+        onStartTracking={() => {
+          void startTracking();
+        }}
+        onStopTracking={stopTracking}
+        onSyncTerritories={() => {
+          void syncLocalTerritories();
+        }}
+        onToggleDebug={() => {
+          setIsDebugPanelExpanded((previousValue) => !previousValue);
+        }}
+        playerCreatedAt={playerCreatedAtLabel}
+        playerIdShort={playerIdShort}
+        playerLoaded={isPlayerLoaded}
+        playerStorageValid={isPlayerStorageValid}
+        savedTerritoryCount={savedTerritories.length}
+        syncStatus={lastSyncStatus}
+        trackingActive={isTracking}
+      />
     </View>
   );
 }
@@ -715,6 +638,51 @@ function formatBoundingBoxDebugText(
   ].join(' -> ');
 }
 
+function formatAreaMetricValue(value: number | null, fractionDigits: number, fallback: string): string {
+  if (value == null || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return value.toFixed(fractionDigits);
+}
+
+function formatPlayerIdShort(playerId: string | null): string {
+  if (!playerId) {
+    return 'Player ----';
+  }
+
+  return `Player ${playerId.slice(0, 8)}`;
+}
+
+function formatDateTimeLabel(value: string | null): string {
+  if (!value) {
+    return 'Unavailable';
+  }
+
+  const parsedDate = new Date(value);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return value;
+  }
+
+  return parsedDate.toLocaleDateString('en-US', {
+    day: '2-digit',
+    month: 'short',
+  });
+}
+
+function formatCoordinateLabel(lastRoutePoint: GpsPoint | null, currentLocation: Coordinates | null): string {
+  if (lastRoutePoint) {
+    return `${lastRoutePoint.latitude.toFixed(6)}, ${lastRoutePoint.longitude.toFixed(6)}`;
+  }
+
+  if (currentLocation) {
+    return `${currentLocation.latitude.toFixed(6)}, ${currentLocation.longitude.toFixed(6)}`;
+  }
+
+  return 'No location yet';
+}
+
 function toGpsPoint(position: Location.LocationObject): GpsPoint {
   return {
     latitude: position.coords.latitude,
@@ -736,147 +704,60 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   messageContainer: {
+    backgroundColor: uiColors.backdrop,
     alignItems: 'center',
     flex: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: uiSpacing.xl,
   },
   subtitle: {
-    color: '#666666',
-    fontSize: 14,
-    marginTop: 8,
+    color: uiColors.secondaryText,
+    fontSize: uiTypography.body,
+    marginTop: uiSpacing.sm,
     textAlign: 'center',
   },
   title: {
-    fontSize: 24,
+    color: uiColors.primaryText,
+    fontSize: uiTypography.headline,
     fontWeight: '600',
     textAlign: 'center',
   },
   overlay: {
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    borderRadius: 12,
-    left: 16,
-    padding: 12,
+    backgroundColor: uiColors.cardOverlayStrong,
+    borderColor: uiColors.cardBorder,
+    borderRadius: uiRadius.md,
+    borderWidth: 1,
+    left: uiSpacing.md,
+    padding: uiSpacing.md,
     position: 'absolute',
-    right: 16,
-    top: 16,
+    right: uiSpacing.md,
+    top: uiSpacing.xl,
   },
   overlayText: {
-    color: '#333333',
-    fontSize: 14,
-    marginTop: 6,
+    color: uiColors.secondaryText,
+    fontSize: uiTypography.body,
+    marginTop: uiSpacing.xs,
   },
   overlayTitle: {
-    color: '#111111',
-    fontSize: 16,
+    color: uiColors.primaryText,
+    fontSize: uiTypography.title,
     fontWeight: '600',
   },
   settingsButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: '#175cd3',
-    borderRadius: 10,
-    marginTop: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  controls: {
-    flexDirection: 'row',
-    gap: 12,
-    left: 16,
-    position: 'absolute',
-    right: 16,
-    top: 96,
-  },
-  secondaryControls: {
-    flexDirection: 'row',
-    gap: 12,
-    left: 16,
-    position: 'absolute',
-    right: 16,
-    top: 152,
-  },
-  button: {
-    alignItems: 'center',
-    borderRadius: 10,
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
+    backgroundColor: uiColors.statusGps,
+    borderRadius: uiRadius.sm,
+    marginTop: uiSpacing.md,
+    paddingHorizontal: uiSpacing.md,
+    paddingVertical: uiSpacing.sm,
   },
   buttonPressed: {
-    opacity: 0.85,
+    opacity: 0.82,
   },
   buttonText: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  startButton: {
-    backgroundColor: '#167c45',
-  },
-  saveButton: {
-    backgroundColor: '#0f766e',
-  },
-  clearButton: {
-    backgroundColor: '#6b7280',
-  },
-  syncButton: {
-    backgroundColor: '#7c3aed',
-  },
-  stopButton: {
-    backgroundColor: '#b42318',
-  },
-  resetPlayerButton: {
-    alignItems: 'center',
-    backgroundColor: '#b54708',
-    borderRadius: 10,
-    marginTop: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  debugPanel: {
-    backgroundColor: 'rgba(17, 17, 17, 0.82)',
-    borderRadius: 12,
-    bottom: 16,
-    left: 16,
-    position: 'absolute',
-    right: 16,
-  },
-  debugHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingTop: 12,
-  },
-  debugScrollContent: {
-    paddingBottom: 12,
-    paddingHorizontal: 12,
-  },
-  debugScrollView: {
-    maxHeight: '35%',
-  },
-  debugSummary: {
-    paddingBottom: 12,
-    paddingHorizontal: 12,
-    paddingTop: 4,
-  },
-  debugText: {
-    color: '#f3f3f3',
-    fontSize: 13,
-    marginTop: 4,
-  },
-  debugToggleText: {
-    color: '#d0d5dd',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  debugTitle: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '600',
+    color: uiColors.primaryText,
+    fontSize: uiTypography.body,
+    fontWeight: '700',
   },
 });
