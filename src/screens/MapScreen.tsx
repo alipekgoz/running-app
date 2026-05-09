@@ -7,8 +7,13 @@ import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
-import type { Coordinates, GpsPoint, LocalSavedTerritory } from '../types';
+import type { Coordinates, GpsPoint, LocalSavedTerritory, PlayerProfile } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
+import {
+  clearPlayerIdentity,
+  loadOrCreatePlayerProfile,
+  wasPlayerStorageValid,
+} from '../services/playerIdentityService';
 import {
   clearSavedTerritories as clearSavedTerritoriesFromStorage,
   loadSavedTerritories,
@@ -43,6 +48,10 @@ export function MapScreen() {
   const [lastSyncStatus, setLastSyncStatus] = useState('No sync yet.');
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
   const [hasAutoSavedCurrentRoute, setHasAutoSavedCurrentRoute] = useState(false);
+  const [currentPlayerProfile, setCurrentPlayerProfile] = useState<PlayerProfile | null>(null);
+  const [isPlayerLoaded, setIsPlayerLoaded] = useState(false);
+  const [isPlayerStorageValid, setIsPlayerStorageValid] = useState(true);
+  const [playerIdentityStatus, setPlayerIdentityStatus] = useState('Player identity not loaded yet.');
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
@@ -95,6 +104,23 @@ export function MapScreen() {
         setSavedTerritories([]);
       } finally {
         setTerritoriesLoading(false);
+      }
+    }
+
+    async function hydratePlayerIdentity(): Promise<void> {
+      try {
+        const playerProfile = await loadOrCreatePlayerProfile();
+        setCurrentPlayerProfile(playerProfile);
+        setIsPlayerStorageValid(wasPlayerStorageValid());
+        setPlayerIdentityStatus('Player identity ready.');
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown player identity error';
+
+        setCurrentPlayerProfile(null);
+        setIsPlayerStorageValid(false);
+        setPlayerIdentityStatus(`Player identity failed: ${errorMessage}`);
+      } finally {
+        setIsPlayerLoaded(true);
       }
     }
 
@@ -177,6 +203,7 @@ export function MapScreen() {
     }
 
     void hydrateSavedTerritories();
+    void hydratePlayerIdentity();
     void loadCurrentLocation();
 
     const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
@@ -350,9 +377,26 @@ export function MapScreen() {
       return;
     }
 
-    const result = await uploadTerritories(savedTerritories);
+    const result = await uploadTerritories(savedTerritories, currentPlayerProfile?.playerId ?? null);
 
     setLastSyncStatus(result.success ? result.message : `Sync failed: ${result.message}`);
+  }
+
+  async function resetPlayerIdentity(): Promise<void> {
+    try {
+      setPlayerIdentityStatus('Resetting player identity...');
+      await clearPlayerIdentity();
+      const nextProfile = await loadOrCreatePlayerProfile();
+      setCurrentPlayerProfile(nextProfile);
+      setIsPlayerStorageValid(wasPlayerStorageValid());
+      setIsPlayerLoaded(true);
+      setPlayerIdentityStatus('Player identity reset complete.');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown reset error';
+
+      setIsPlayerStorageValid(false);
+      setPlayerIdentityStatus(`Player identity reset failed: ${errorMessage}`);
+    }
   }
 
   function saveTerritory(trigger: 'auto' | 'manual' = 'manual'): void {
@@ -532,6 +576,7 @@ export function MapScreen() {
           <Text style={styles.debugText}>Saved territories: {savedTerritories.length}</Text>
           <Text style={styles.debugText}>Persisted loaded: {territoriesLoading ? 'Loading' : 'Yes'}</Text>
           <Text style={styles.debugText}>Backend configured: {backendConfigured ? 'Yes' : 'No'}</Text>
+          <Text style={styles.debugText}>Player loaded: {isPlayerLoaded ? 'Yes' : 'No'}</Text>
         </View>
         {isDebugPanelExpanded ? (
           <ScrollView
@@ -578,6 +623,21 @@ export function MapScreen() {
             <Text style={styles.debugText}>
               Storage error: {territoriesStorageError ?? 'None'}
             </Text>
+            <Text style={styles.debugText}>Current player id: {currentPlayerProfile?.playerId ?? 'Unavailable'}</Text>
+            <Text style={styles.debugText}>Player loaded: {isPlayerLoaded ? 'Yes' : 'No'}</Text>
+            <Text style={styles.debugText}>
+              Player created at: {currentPlayerProfile?.createdAt ?? 'Unavailable'}
+            </Text>
+            <Text style={styles.debugText}>
+              Player last seen at: {currentPlayerProfile?.lastSeenAt ?? 'Unavailable'}
+            </Text>
+            <Text style={styles.debugText}>
+              Player storage valid: {isPlayerStorageValid ? 'Yes' : 'No'}
+            </Text>
+            <Text style={styles.debugText}>
+              Player app version: {currentPlayerProfile?.appVersion ?? 'Unavailable'}
+            </Text>
+            <Text style={styles.debugText}>Player identity status: {playerIdentityStatus}</Text>
             <Text style={styles.debugText}>Last sync status: {lastSyncStatus}</Text>
             <Text style={styles.debugText}>Upload button enabled: {isSyncEnabled ? 'Yes' : 'No'}</Text>
             <Text style={styles.debugText}>
@@ -599,6 +659,17 @@ export function MapScreen() {
             <Text style={styles.debugText}>
               Last rejected reason: {lastRejectedReason ?? 'None'}
             </Text>
+            <Pressable
+              onPress={() => {
+                void resetPlayerIdentity();
+              }}
+              style={({ pressed }) => [
+                styles.resetPlayerButton,
+                pressed ? styles.buttonPressed : null,
+              ]}
+            >
+              <Text style={styles.buttonText}>Reset Player Identity</Text>
+            </Pressable>
           </ScrollView>
         ) : null}
       </View>
@@ -757,6 +828,14 @@ const styles = StyleSheet.create({
   },
   stopButton: {
     backgroundColor: '#b42318',
+  },
+  resetPlayerButton: {
+    alignItems: 'center',
+    backgroundColor: '#b54708',
+    borderRadius: 10,
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   debugPanel: {
     backgroundColor: 'rgba(17, 17, 17, 0.82)',

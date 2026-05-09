@@ -7,13 +7,13 @@ type UploadResult = {
   success: boolean;
 };
 
-function toTerritoryInsertPayload(territory: LocalSavedTerritory) {
+function toTerritoryInsertPayload(territory: LocalSavedTerritory, playerId?: string | null) {
   return {
     area_hectare: territory.areaHectare,
     area_m2: territory.areaM2,
     coordinates: territory.coordinates,
     created_at: territory.createdAt,
-    device_id: null,
+    device_id: playerId ?? null,
     id: territory.id,
     source_route_point_count: territory.sourceRoutePointCount,
     sync_status: 'synced',
@@ -24,7 +24,10 @@ export function isBackendConfigured(): boolean {
   return getSupabaseConfigStatus().isConfigured && getSupabaseClient() !== null;
 }
 
-export async function uploadTerritory(territory: LocalSavedTerritory): Promise<UploadResult> {
+export async function uploadTerritory(
+  territory: LocalSavedTerritory,
+  playerId?: string | null,
+): Promise<UploadResult> {
   const supabase = getSupabaseClient();
 
   if (!isBackendConfigured() || !supabase) {
@@ -35,7 +38,7 @@ export async function uploadTerritory(territory: LocalSavedTerritory): Promise<U
   }
 
   try {
-    const { error } = await supabase.from('territories').insert(toTerritoryInsertPayload(territory));
+    const { error } = await supabase.from('territories').insert(toTerritoryInsertPayload(territory, playerId));
 
     if (error) {
       return {
@@ -58,7 +61,10 @@ export async function uploadTerritory(territory: LocalSavedTerritory): Promise<U
   }
 }
 
-export async function uploadTerritories(territories: readonly LocalSavedTerritory[]): Promise<UploadResult> {
+export async function uploadTerritories(
+  territories: readonly LocalSavedTerritory[],
+  playerId?: string | null,
+): Promise<UploadResult> {
   const supabase = getSupabaseClient();
 
   if (!isBackendConfigured() || !supabase) {
@@ -76,7 +82,9 @@ export async function uploadTerritories(territories: readonly LocalSavedTerritor
   }
 
   try {
-    const { error } = await supabase.from('territories').insert(territories.map(toTerritoryInsertPayload));
+    const { error } = await supabase.from('territories').insert(
+      territories.map((territory) => toTerritoryInsertPayload(territory, playerId)),
+    );
 
     if (error) {
       return {
