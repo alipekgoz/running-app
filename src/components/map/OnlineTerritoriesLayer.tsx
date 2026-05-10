@@ -2,12 +2,14 @@ import Mapbox from '@rnmapbox/maps';
 import { memo, useMemo } from 'react';
 
 import {
+  conflictSeverityStyleConfig,
+  onlineTerritoryConflictOutlineBaseStyle,
   onlineTerritoryMineFillStyle,
   onlineTerritoryMineOutlineStyle,
   onlineTerritoryOtherFillStyle,
   onlineTerritoryOtherOutlineStyle,
 } from '../../config/mapStyleConfig';
-import type { Coordinates, OnlineTerritory } from '../../types';
+import type { ConflictSeverity, Coordinates, OnlineTerritory } from '../../types';
 
 type OnlineTerritoryFeature = {
   geometry: {
@@ -15,6 +17,7 @@ type OnlineTerritoryFeature = {
     type: 'Polygon';
   };
   properties: {
+    isConflicting: boolean;
     id: string;
     isMine: boolean;
   };
@@ -27,6 +30,8 @@ type OnlineTerritoryFeatureCollection = {
 };
 
 type OnlineTerritoriesLayerProps = {
+  conflictSeverity: ConflictSeverity;
+  conflictingTerritoryIds: readonly string[];
   territories: readonly OnlineTerritory[];
 };
 
@@ -35,6 +40,8 @@ const ONLINE_TERRITORIES_MINE_FILL_LAYER_ID = 'online-territories-mine-fill';
 const ONLINE_TERRITORIES_MINE_OUTLINE_LAYER_ID = 'online-territories-mine-outline';
 const ONLINE_TERRITORIES_OTHER_FILL_LAYER_ID = 'online-territories-other-fill';
 const ONLINE_TERRITORIES_OTHER_OUTLINE_LAYER_ID = 'online-territories-other-outline';
+const ONLINE_TERRITORIES_CONFLICT_MINE_OUTLINE_LAYER_ID = 'online-territories-conflict-mine-outline';
+const ONLINE_TERRITORIES_CONFLICT_OTHER_OUTLINE_LAYER_ID = 'online-territories-conflict-other-outline';
 
 function ensureClosedRing(coordinates: readonly Coordinates[]): [number, number][] {
   if (coordinates.length === 0) {
@@ -54,7 +61,10 @@ function ensureClosedRing(coordinates: readonly Coordinates[]): [number, number]
   return [...ring, firstCoordinate];
 }
 
-function toFeatureCollection(territories: readonly OnlineTerritory[]): OnlineTerritoryFeatureCollection | null {
+function toFeatureCollection(
+  territories: readonly OnlineTerritory[],
+  conflictingTerritoryIds: ReadonlySet<string>,
+): OnlineTerritoryFeatureCollection | null {
   const features = territories
     .map((territory) => {
       const closedRing = ensureClosedRing(territory.coordinates);
@@ -69,6 +79,7 @@ function toFeatureCollection(territories: readonly OnlineTerritory[]): OnlineTer
           type: 'Polygon' as const,
         },
         properties: {
+          isConflicting: conflictingTerritoryIds.has(territory.id),
           id: territory.id,
           isMine: territory.isMine === true,
         },
@@ -87,8 +98,17 @@ function toFeatureCollection(territories: readonly OnlineTerritory[]): OnlineTer
   };
 }
 
-function OnlineTerritoriesLayerComponent({ territories }: OnlineTerritoriesLayerProps) {
-  const featureCollection = useMemo(() => toFeatureCollection(territories), [territories]);
+function OnlineTerritoriesLayerComponent({
+  conflictSeverity,
+  conflictingTerritoryIds,
+  territories,
+}: OnlineTerritoriesLayerProps) {
+  const conflictingTerritoryIdSet = useMemo(() => new Set(conflictingTerritoryIds), [conflictingTerritoryIds]);
+  const featureCollection = useMemo(
+    () => toFeatureCollection(territories, conflictingTerritoryIdSet),
+    [conflictingTerritoryIdSet, territories],
+  );
+  const conflictStyle = conflictSeverityStyleConfig[conflictSeverity];
 
   if (!featureCollection) {
     return null;
@@ -115,6 +135,26 @@ function OnlineTerritoriesLayerComponent({ territories }: OnlineTerritoriesLayer
         filter={['==', ['get', 'isMine'], false]}
         id={ONLINE_TERRITORIES_OTHER_OUTLINE_LAYER_ID}
         style={onlineTerritoryOtherOutlineStyle}
+      />
+      <Mapbox.LineLayer
+        filter={['all', ['==', ['get', 'isMine'], true], ['==', ['get', 'isConflicting'], true]]}
+        id={ONLINE_TERRITORIES_CONFLICT_MINE_OUTLINE_LAYER_ID}
+        style={{
+          ...onlineTerritoryConflictOutlineBaseStyle,
+          lineColor: conflictStyle.color,
+          lineOpacity: conflictStyle.territoryOpacityBoost,
+          lineWidth: onlineTerritoryMineOutlineStyle.lineWidth + conflictStyle.territoryLineWidthBoost,
+        }}
+      />
+      <Mapbox.LineLayer
+        filter={['all', ['==', ['get', 'isMine'], false], ['==', ['get', 'isConflicting'], true]]}
+        id={ONLINE_TERRITORIES_CONFLICT_OTHER_OUTLINE_LAYER_ID}
+        style={{
+          ...onlineTerritoryConflictOutlineBaseStyle,
+          lineColor: conflictStyle.color,
+          lineOpacity: conflictStyle.territoryOpacityBoost,
+          lineWidth: onlineTerritoryOtherOutlineStyle.lineWidth + conflictStyle.territoryLineWidthBoost,
+        }}
       />
     </Mapbox.ShapeSource>
   );

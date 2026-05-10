@@ -1,10 +1,13 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../../config/uiConfig';
+import type { ConflictSeverity } from '../../types';
 
 type TerritoryStatsCardProps = {
   areaHectareLabel: string;
   areaM2Label: string;
+  conflictLabel: string;
+  conflictSeverity: ConflictSeverity;
   savedTerritoryCount: number;
   syncStatus: string;
   trackingStateLabel: 'Idle' | 'Tracking';
@@ -13,6 +16,8 @@ type TerritoryStatsCardProps = {
 function TerritoryStatsCardComponent({
   areaHectareLabel,
   areaM2Label,
+  conflictLabel,
+  conflictSeverity,
   savedTerritoryCount,
   syncStatus,
   trackingStateLabel,
@@ -41,6 +46,14 @@ function TerritoryStatsCardComponent({
             {trackingStateLabel}
           </Text>
         </View>
+        <View style={styles.conflictBlock}>
+          <Text style={styles.footerLabel}>Conflict</Text>
+          <View style={[styles.conflictBadge, getConflictBadgeStyle(conflictSeverity)]}>
+            <Text numberOfLines={1} style={styles.conflictBadgeText}>
+              {conflictLabel}
+            </Text>
+          </View>
+        </View>
         <View style={styles.syncBlock}>
           <Text style={styles.footerLabel}>Sync</Text>
           <Text numberOfLines={1} style={styles.syncValue}>
@@ -59,6 +72,21 @@ const styles = StyleSheet.create({
     borderRadius: uiRadius.card,
     borderWidth: 1,
     padding: uiSpacing.lg,
+  },
+  conflictBadge: {
+    borderRadius: uiRadius.chip,
+    borderWidth: 1,
+    marginTop: uiSpacing.xs,
+    paddingHorizontal: uiSpacing.sm,
+    paddingVertical: uiSpacing.xs,
+  },
+  conflictBadgeText: {
+    color: uiColors.primaryText,
+    fontSize: uiTypography.caption,
+    fontWeight: '700',
+  },
+  conflictBlock: {
+    minWidth: 108,
   },
   footerLabel: {
     color: uiColors.secondaryText,
@@ -118,3 +146,29 @@ const styles = StyleSheet.create({
 });
 
 export const TerritoryStatsCard = TerritoryStatsCardComponent;
+
+function getConflictBadgeStyle(conflictSeverity: ConflictSeverity) {
+  switch (conflictSeverity) {
+    case 'low':
+      return {
+        backgroundColor: 'rgba(250,204,21,0.18)',
+        borderColor: 'rgba(250,204,21,0.45)',
+      };
+    case 'medium':
+      return {
+        backgroundColor: 'rgba(249,115,22,0.18)',
+        borderColor: 'rgba(249,115,22,0.5)',
+      };
+    case 'high':
+      return {
+        backgroundColor: 'rgba(255,98,98,0.18)',
+        borderColor: 'rgba(255,98,98,0.52)',
+      };
+    case 'none':
+    default:
+      return {
+        backgroundColor: 'rgba(0,210,106,0.12)',
+        borderColor: 'rgba(0,210,106,0.35)',
+      };
+  }
+}

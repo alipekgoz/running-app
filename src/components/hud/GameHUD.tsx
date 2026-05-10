@@ -2,6 +2,7 @@ import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { uiHud, uiSpacing } from '../../config/uiConfig';
+import type { ConflictSeverity } from '../../types';
 import { DebugOverlay } from './DebugOverlay';
 import { PlayerIdentityCard } from './PlayerIdentityCard';
 import { TerritoryStatsCard } from './TerritoryStatsCard';
@@ -14,6 +15,8 @@ type GameHUDProps = {
   backendConfigured: boolean;
   canSaveTerritory: boolean;
   canSync: boolean;
+  conflictLabel: string;
+  conflictSeverity: ConflictSeverity;
   debugLines: readonly string[];
   debugOpen: boolean;
   gpsReady: boolean;
@@ -50,6 +53,8 @@ function GameHUDComponent(props: GameHUDProps) {
           <TerritoryStatsCard
             areaHectareLabel={props.areaHectareLabel}
             areaM2Label={props.areaM2Label}
+            conflictLabel={props.conflictLabel}
+            conflictSeverity={props.conflictSeverity}
             savedTerritoryCount={props.savedTerritoryCount}
             syncStatus={props.syncStatus}
             trackingStateLabel={trackingStateLabel}

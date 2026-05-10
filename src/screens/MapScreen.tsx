@@ -26,6 +26,7 @@ import { fetchTerritories, isBackendConfigured, uploadTerritories } from '../ser
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { analyzeTerritoryOverlap } from '../utils/analyzeTerritoryOverlap';
+import { buildConflictVisualizationState } from '../utils/buildConflictVisualizationState';
 import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
@@ -112,6 +113,14 @@ export function MapScreen() {
     () => analyzeTerritoryOverlap(territoryPreviewPayload?.coordinates ?? [], onlineTerritoriesWithOwnership),
     [onlineTerritoriesWithOwnership, territoryPreviewPayload?.coordinates],
   );
+  const conflictVisualizationState = useMemo(
+    () => buildConflictVisualizationState(territoryOverlapAnalysis),
+    [territoryOverlapAnalysis],
+  );
+  const conflictLabel = useMemo(
+    () => formatConflictLabel(conflictVisualizationState.severity),
+    [conflictVisualizationState.severity],
+  );
   const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
   const playerCreatedAtLabel = useMemo(
     () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
@@ -150,6 +159,10 @@ export function MapScreen() {
       `Overlapping others count: ${territoryOverlapAnalysis.overlappingOthersCount}`,
       `Estimated overlap percent: ${territoryOverlapAnalysis.estimatedOverlapPercent.toFixed(1)}%`,
       `Overlapping territory ids count: ${territoryOverlapAnalysis.overlappingTerritoryIds.length}`,
+      `Conflict severity: ${conflictVisualizationState.severity}`,
+      `Overlap percent rounded: ${Math.round(conflictVisualizationState.overlapPercent)}%`,
+      `Overlaps mine: ${conflictVisualizationState.overlapsMine ? 'Yes' : 'No'}`,
+      `Overlaps others: ${conflictVisualizationState.overlapsOthers ? 'Yes' : 'No'}`,
       `Online fetch loading: ${onlineTerritoriesLoading ? 'Yes' : 'No'}`,
       `Last fetch status: ${lastFetchStatus}`,
       `Fetch error: ${onlineTerritoriesError ?? 'None'}`,
@@ -193,6 +206,7 @@ export function MapScreen() {
       onlineTerritoriesWithOwnership.length,
       playerIdentityStatus,
       playerIdShort,
+      conflictVisualizationState,
       polygonAnalysis,
       polygonAreaAnalysis,
       polygonPreviewAnalysis,
@@ -629,11 +643,15 @@ export function MapScreen() {
       <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
         <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
-        <OnlineTerritoriesLayer territories={onlineTerritoriesWithOwnership} />
+        <OnlineTerritoriesLayer
+          conflictSeverity={conflictVisualizationState.severity}
+          conflictingTerritoryIds={territoryOverlapAnalysis.overlappingTerritoryIds}
+          territories={onlineTerritoriesWithOwnership}
+        />
         <SavedTerritoriesLayer territories={savedTerritories} />
         <PolygonPreview
+          conflictSeverity={conflictVisualizationState.severity}
           geoJSON={polygonPreviewAnalysis.geoJSON}
-          hasOverlap={polygonPreviewAnalysis.isRendered && territoryOverlapAnalysis.hasOverlap}
         />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
@@ -672,6 +690,8 @@ export function MapScreen() {
         backendConfigured={backendConfigured}
         canSaveTerritory={isSaveTerritoryEnabled}
         canSync={isSyncEnabled}
+        conflictLabel={conflictLabel}
+        conflictSeverity={conflictVisualizationState.severity}
         debugLines={debugLines}
         debugOpen={isDebugPanelExpanded}
         gpsReady={gpsReady}
@@ -755,6 +775,20 @@ function formatAreaMetricValue(value: number | null, fractionDigits: number, fal
   }
 
   return value.toFixed(fractionDigits);
+}
+
+function formatConflictLabel(severity: 'none' | 'low' | 'medium' | 'high'): string {
+  switch (severity) {
+    case 'low':
+      return 'Minor Overlap';
+    case 'medium':
+      return 'Territory Conflict';
+    case 'high':
+      return 'High Conflict';
+    case 'none':
+    default:
+      return 'No Conflict';
+  }
 }
 
 function formatPlayerIdShort(playerId: string | null): string {
