@@ -1,4 +1,4 @@
-import type { Coordinates, OnlineTerritory, TerritoryOverlapAnalysis } from '../types';
+import type { Coordinates, OverlapComparableTerritory, TerritoryOverlapAnalysis } from '../types';
 import { calculateBoundingBox } from './geo/calculateBoundingBox';
 import { filterValidCoordinates, isValidCoordinate } from './geo/coordinateValidation';
 
@@ -170,6 +170,20 @@ function getApproximateCoverageRatio(
   return coveredSamples / previewSamples;
 }
 
+export function estimateTerritoryCoverageRatio(
+  previewCoordinates: readonly Coordinates[],
+  territoryCoordinates: readonly Coordinates[],
+): number {
+  const validPreviewCoordinates = ensureClosedRing(filterValidCoordinates(previewCoordinates));
+  const validTerritoryCoordinates = ensureClosedRing(filterValidCoordinates(territoryCoordinates));
+
+  if (validPreviewCoordinates.length < 4 || validTerritoryCoordinates.length < 4) {
+    return 0;
+  }
+
+  return getApproximateCoverageRatio(validPreviewCoordinates, validTerritoryCoordinates);
+}
+
 function getTerritoryOverlapRatio(
   previewCoordinates: readonly Coordinates[],
   territoryCoordinates: readonly Coordinates[],
@@ -207,7 +221,7 @@ function getTerritoryOverlapRatio(
 
 export function analyzeTerritoryOverlap(
   previewCoordinates: readonly Coordinates[],
-  onlineTerritories: readonly OnlineTerritory[],
+  territories: readonly OverlapComparableTerritory[],
 ): TerritoryOverlapAnalysis {
   const validPreviewCoordinates = ensureClosedRing(filterValidCoordinates(previewCoordinates));
 
@@ -222,7 +236,7 @@ export function analyzeTerritoryOverlap(
     };
   }
 
-  const overlappingTerritories = onlineTerritories.flatMap((territory) => {
+  const overlappingTerritories = territories.flatMap((territory) => {
     const validTerritoryCoordinates = ensureClosedRing(
       territory.coordinates.filter((coordinate): coordinate is Coordinates => isValidCoordinate(coordinate)),
     );

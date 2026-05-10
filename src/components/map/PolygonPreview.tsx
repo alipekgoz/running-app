@@ -16,14 +16,15 @@ const POLYGON_PREVIEW_OUTLINE_LAYER_ID = 'polygon-preview-outline';
 type PolygonPreviewProps = {
   conflictSeverity: ConflictSeverity;
   geoJSON: PolygonPreviewFeature | null;
+  isClaimRejected: boolean;
 };
 
-function PolygonPreviewComponent({ conflictSeverity, geoJSON }: PolygonPreviewProps) {
+function PolygonPreviewComponent({ conflictSeverity, geoJSON, isClaimRejected }: PolygonPreviewProps) {
   if (!geoJSON) {
     return null;
   }
 
-  const conflictStyle = conflictSeverityStyleConfig[conflictSeverity];
+  const conflictStyle = conflictSeverityStyleConfig[isClaimRejected ? 'high' : conflictSeverity];
 
   return (
     <Mapbox.ShapeSource id={POLYGON_PREVIEW_SOURCE_ID} shape={geoJSON}>
@@ -48,7 +49,7 @@ function PolygonPreviewComponent({ conflictSeverity, geoJSON }: PolygonPreviewPr
                 ...polygonPreviewOutlineStyle,
                 lineColor: conflictStyle.color,
                 lineOpacity: conflictStyle.lineOpacity,
-                lineWidth: conflictStyle.lineWidth,
+                lineWidth: isClaimRejected ? conflictStyle.lineWidth + 0.4 : conflictStyle.lineWidth,
               }
         }
       />

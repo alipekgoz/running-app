@@ -6,3 +6,9 @@ export type TerritoryOverlapAnalysis = {
   overlappingOthersCount: number;
   overlappingTerritoryIds: string[];
 };
+
+export type OverlapComparableTerritory = {
+  coordinates: import('./location').Coordinates[];
+  id: string;
+  isMine: boolean;
+};

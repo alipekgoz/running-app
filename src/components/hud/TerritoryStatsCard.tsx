@@ -6,6 +6,8 @@ import type { ConflictSeverity } from '../../types';
 type TerritoryStatsCardProps = {
   areaHectareLabel: string;
   areaM2Label: string;
+  claimLabel: string;
+  claimSeverity: ConflictSeverity;
   conflictLabel: string;
   conflictSeverity: ConflictSeverity;
   savedTerritoryCount: number;
@@ -16,6 +18,8 @@ type TerritoryStatsCardProps = {
 function TerritoryStatsCardComponent({
   areaHectareLabel,
   areaM2Label,
+  claimLabel,
+  claimSeverity,
   conflictLabel,
   conflictSeverity,
   savedTerritoryCount,
@@ -45,6 +49,14 @@ function TerritoryStatsCardComponent({
           <Text style={[styles.footerValue, trackingStateLabel === 'Tracking' ? styles.trackingOn : null]}>
             {trackingStateLabel}
           </Text>
+        </View>
+        <View style={styles.conflictBlock}>
+          <Text style={styles.footerLabel}>Claim</Text>
+          <View style={[styles.conflictBadge, getConflictBadgeStyle(claimSeverity)]}>
+            <Text numberOfLines={1} style={styles.conflictBadgeText}>
+              {claimLabel}
+            </Text>
+          </View>
         </View>
         <View style={styles.conflictBlock}>
           <Text style={styles.footerLabel}>Conflict</Text>
@@ -86,7 +98,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   conflictBlock: {
-    minWidth: 108,
+    minWidth: 104,
   },
   footerLabel: {
     color: uiColors.secondaryText,

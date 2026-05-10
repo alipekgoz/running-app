@@ -15,6 +15,8 @@ type GameHUDProps = {
   backendConfigured: boolean;
   canSaveTerritory: boolean;
   canSync: boolean;
+  claimLabel: string;
+  claimSeverity: ConflictSeverity;
   conflictLabel: string;
   conflictSeverity: ConflictSeverity;
   debugLines: readonly string[];
@@ -53,6 +55,8 @@ function GameHUDComponent(props: GameHUDProps) {
           <TerritoryStatsCard
             areaHectareLabel={props.areaHectareLabel}
             areaM2Label={props.areaM2Label}
+            claimLabel={props.claimLabel}
+            claimSeverity={props.claimSeverity}
             conflictLabel={props.conflictLabel}
             conflictSeverity={props.conflictSeverity}
             savedTerritoryCount={props.savedTerritoryCount}

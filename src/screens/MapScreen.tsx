@@ -10,7 +10,7 @@ import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../config/uiConfig';
-import type { Coordinates, GpsPoint, LocalSavedTerritory, OnlineTerritory, PlayerProfile } from '../types';
+import type { Coordinates, GpsPoint, LocalSavedTerritory, OnlineTerritory, OverlapComparableTerritory, PlayerProfile } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
   clearPlayerIdentity,
@@ -23,6 +23,7 @@ import {
   saveSavedTerritories,
 } from '../services/territoryStorageService';
 import { fetchTerritories, isBackendConfigured, uploadTerritories } from '../services/territoryBackendService';
+import { CLAIM_RULE_CONFIG } from '../config/claimRulesConfig';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { analyzeTerritoryOverlap } from '../utils/analyzeTerritoryOverlap';
@@ -32,6 +33,7 @@ import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
 import { createId } from '../utils/createId';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
+import { validateTerritoryClaim } from '../utils/validateTerritoryClaim';
 
 if (MAPBOX_ACCESS_TOKEN) {
   void Mapbox.setAccessToken(MAPBOX_ACCESS_TOKEN);
@@ -109,9 +111,13 @@ export function MapScreen() {
       })),
     [currentPlayerProfile?.playerId, onlineTerritories],
   );
+  const overlapComparableTerritories = useMemo(
+    () => buildOverlapComparableTerritories(onlineTerritoriesWithOwnership, savedTerritories),
+    [onlineTerritoriesWithOwnership, savedTerritories],
+  );
   const territoryOverlapAnalysis = useMemo(
-    () => analyzeTerritoryOverlap(territoryPreviewPayload?.coordinates ?? [], onlineTerritoriesWithOwnership),
-    [onlineTerritoriesWithOwnership, territoryPreviewPayload?.coordinates],
+    () => analyzeTerritoryOverlap(territoryPreviewPayload?.coordinates ?? [], overlapComparableTerritories),
+    [overlapComparableTerritories, territoryPreviewPayload?.coordinates],
   );
   const conflictVisualizationState = useMemo(
     () => buildConflictVisualizationState(territoryOverlapAnalysis),
@@ -121,6 +127,22 @@ export function MapScreen() {
     () => formatConflictLabel(conflictVisualizationState.severity),
     [conflictVisualizationState.severity],
   );
+  const claimValidationResult = useMemo(
+    () =>
+      validateTerritoryClaim(
+        territoryOverlapAnalysis,
+        conflictVisualizationState,
+        onlineTerritoriesWithOwnership,
+        territoryPreviewPayload?.coordinates ?? [],
+      ),
+    [
+      conflictVisualizationState,
+      onlineTerritoriesWithOwnership,
+      territoryOverlapAnalysis,
+      territoryPreviewPayload?.coordinates,
+    ],
+  );
+  const claimLabel = useMemo(() => formatClaimLabel(claimValidationResult), [claimValidationResult]);
   const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
   const playerCreatedAtLabel = useMemo(
     () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
@@ -163,6 +185,11 @@ export function MapScreen() {
       `Overlap percent rounded: ${Math.round(conflictVisualizationState.overlapPercent)}%`,
       `Overlaps mine: ${conflictVisualizationState.overlapsMine ? 'Yes' : 'No'}`,
       `Overlaps others: ${conflictVisualizationState.overlapsOthers ? 'Yes' : 'No'}`,
+      `Claim allowed: ${claimValidationResult.isClaimAllowed ? 'Yes' : 'No'}`,
+      `Claim reject reason: ${claimValidationResult.rejectReason}`,
+      `Capture candidate: ${claimValidationResult.isCaptureCandidate ? 'Yes' : 'No'}`,
+      `Estimated enemy coverage percent: ${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
+      `Claim overlap percent: ${claimValidationResult.overlapPercent.toFixed(1)}%`,
       `Online fetch loading: ${onlineTerritoriesLoading ? 'Yes' : 'No'}`,
       `Last fetch status: ${lastFetchStatus}`,
       `Fetch error: ${onlineTerritoriesError ?? 'None'}`,
@@ -206,6 +233,7 @@ export function MapScreen() {
       onlineTerritoriesWithOwnership.length,
       playerIdentityStatus,
       playerIdShort,
+      claimValidationResult,
       conflictVisualizationState,
       polygonAnalysis,
       polygonAreaAnalysis,
@@ -378,6 +406,15 @@ export function MapScreen() {
       return;
     }
 
+    if (!claimValidationResult.isClaimAllowed) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      setLastSaveStatus(`Claim blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`);
+      return;
+    }
+
     autoSaveTimeoutRef.current = setTimeout(() => {
       saveTerritory('auto');
       autoSaveTimeoutRef.current = null;
@@ -389,7 +426,7 @@ export function MapScreen() {
         autoSaveTimeoutRef.current = null;
       }
     };
-  }, [hasAutoSavedCurrentRoute, saveTerritory, territoryPreviewPayload, territoryPreviewSignature]);
+  }, [claimValidationResult, hasAutoSavedCurrentRoute, saveTerritory, territoryPreviewPayload, territoryPreviewSignature]);
 
   useEffect(() => {
     if (territoriesLoading) {
@@ -581,6 +618,15 @@ export function MapScreen() {
       return;
     }
 
+    if (!claimValidationResult.isClaimAllowed) {
+      setLastSaveStatus(
+        trigger === 'auto'
+          ? `Auto-save blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`
+          : `Save blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`,
+      );
+      return;
+    }
+
     let saveSucceeded = false;
     let autoStopAfterSave = false;
 
@@ -652,6 +698,7 @@ export function MapScreen() {
         <PolygonPreview
           conflictSeverity={conflictVisualizationState.severity}
           geoJSON={polygonPreviewAnalysis.geoJSON}
+          isClaimRejected={!claimValidationResult.isClaimAllowed && territoryPreviewPayload !== null}
         />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
@@ -688,8 +735,10 @@ export function MapScreen() {
         areaHectareLabel={areaHectareLabel}
         areaM2Label={areaM2Label}
         backendConfigured={backendConfigured}
-        canSaveTerritory={isSaveTerritoryEnabled}
+        canSaveTerritory={isSaveTerritoryEnabled && claimValidationResult.isClaimAllowed}
         canSync={isSyncEnabled}
+        claimLabel={claimLabel}
+        claimSeverity={getClaimSeverity(claimValidationResult)}
         conflictLabel={conflictLabel}
         conflictSeverity={conflictVisualizationState.severity}
         debugLines={debugLines}
@@ -737,6 +786,70 @@ function formatMeters(value: number | null): string {
   }
 
   return `${value.toFixed(1)} m`;
+}
+
+function buildOverlapComparableTerritories(
+  onlineTerritories: readonly OnlineTerritory[],
+  savedTerritories: readonly LocalSavedTerritory[],
+): OverlapComparableTerritory[] {
+  const mergedTerritories = new Map<string, OverlapComparableTerritory>();
+
+  for (const territory of onlineTerritories) {
+    const geometrySignature = getTerritoryGeometrySignature(territory.coordinates);
+    const dedupeKey = `geometry:${geometrySignature}`;
+
+    if (!mergedTerritories.has(dedupeKey)) {
+      mergedTerritories.set(dedupeKey, {
+        coordinates: territory.coordinates,
+        id: territory.id,
+        isMine: territory.isMine === true,
+      });
+      continue;
+    }
+
+    const existingTerritory = mergedTerritories.get(dedupeKey);
+
+    if (existingTerritory && !existingTerritory.isMine && territory.isMine === true) {
+      mergedTerritories.set(dedupeKey, {
+        coordinates: territory.coordinates,
+        id: territory.id,
+        isMine: true,
+      });
+    }
+  }
+
+  for (const territory of savedTerritories) {
+    const geometrySignature = getTerritoryGeometrySignature(territory.coordinates);
+    const dedupeKey = `geometry:${geometrySignature}`;
+
+    if (mergedTerritories.has(dedupeKey)) {
+      const existingTerritory = mergedTerritories.get(dedupeKey);
+
+      if (existingTerritory && !existingTerritory.isMine) {
+        mergedTerritories.set(dedupeKey, {
+          coordinates: territory.coordinates,
+          id: territory.id,
+          isMine: true,
+        });
+      }
+      continue;
+    }
+
+    mergedTerritories.set(dedupeKey, {
+      coordinates: territory.coordinates,
+      id: territory.id,
+      isMine: true,
+    });
+  }
+
+  return [...mergedTerritories.values()];
+}
+
+function getTerritoryGeometrySignature(coordinates: readonly Coordinates[]): string {
+  return coordinates
+    .map((coordinate) => `${coordinate.latitude.toFixed(5)}:${coordinate.longitude.toFixed(5)}`)
+    .sort()
+    .join('|');
 }
 
 function formatAreaSquareMeters(value: number | null): string {
@@ -788,6 +901,56 @@ function formatConflictLabel(severity: 'none' | 'low' | 'medium' | 'high'): stri
     case 'none':
     default:
       return 'No Conflict';
+  }
+}
+
+function formatClaimLabel(claimValidationResult: ReturnType<typeof validateTerritoryClaim>): string {
+  if (claimValidationResult.isCaptureCandidate) {
+    return 'Capture Candidate';
+  }
+
+  if (!claimValidationResult.isClaimAllowed) {
+    if (claimValidationResult.rejectReason === 'high_conflict') {
+      return 'Territory Conflict';
+    }
+
+    if (claimValidationResult.rejectReason === 'enemy_overlap') {
+      return 'Enemy Territory';
+    }
+
+    return 'Claim Blocked';
+  }
+
+  return 'Claim Allowed';
+}
+
+function getClaimSeverity(claimValidationResult: ReturnType<typeof validateTerritoryClaim>): 'none' | 'low' | 'medium' | 'high' {
+  if (!claimValidationResult.isClaimAllowed) {
+    return claimValidationResult.rejectReason === 'high_conflict' ? 'high' : 'medium';
+  }
+
+  if (claimValidationResult.isCaptureCandidate) {
+    return 'high';
+  }
+
+  if (claimValidationResult.overlapPercent >= CLAIM_RULE_CONFIG.smallOverlapAllowancePercent) {
+    return 'low';
+  }
+
+  return 'none';
+}
+
+function formatClaimRejectReason(rejectReason: ReturnType<typeof validateTerritoryClaim>['rejectReason']): string {
+  switch (rejectReason) {
+    case 'enemy_overlap':
+      return 'enemy overlap detected';
+    case 'high_conflict':
+      return 'high conflict with enemy territory';
+    case 'invalid_polygon':
+      return 'invalid polygon';
+    case 'none':
+    default:
+      return 'none';
   }
 }
 
