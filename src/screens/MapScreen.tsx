@@ -25,6 +25,7 @@ import {
 import { fetchTerritories, isBackendConfigured, uploadTerritories } from '../services/territoryBackendService';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
+import { analyzeTerritoryOverlap } from '../utils/analyzeTerritoryOverlap';
 import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
@@ -107,6 +108,10 @@ export function MapScreen() {
       })),
     [currentPlayerProfile?.playerId, onlineTerritories],
   );
+  const territoryOverlapAnalysis = useMemo(
+    () => analyzeTerritoryOverlap(territoryPreviewPayload?.coordinates ?? [], onlineTerritoriesWithOwnership),
+    [onlineTerritoriesWithOwnership, territoryPreviewPayload?.coordinates],
+  );
   const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
   const playerCreatedAtLabel = useMemo(
     () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
@@ -139,6 +144,12 @@ export function MapScreen() {
       `Fill point count: ${polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}`,
       `Saved territory count: ${savedTerritories.length}`,
       `Online territory count: ${onlineTerritoriesWithOwnership.length}`,
+      `Overlap detected: ${territoryOverlapAnalysis.hasOverlap ? 'Yes' : 'No'}`,
+      `Overlap count: ${territoryOverlapAnalysis.overlapCount}`,
+      `Overlapping mine count: ${territoryOverlapAnalysis.overlappingMineCount}`,
+      `Overlapping others count: ${territoryOverlapAnalysis.overlappingOthersCount}`,
+      `Estimated overlap percent: ${territoryOverlapAnalysis.estimatedOverlapPercent.toFixed(1)}%`,
+      `Overlapping territory ids count: ${territoryOverlapAnalysis.overlappingTerritoryIds.length}`,
       `Online fetch loading: ${onlineTerritoriesLoading ? 'Yes' : 'No'}`,
       `Last fetch status: ${lastFetchStatus}`,
       `Fetch error: ${onlineTerritoriesError ?? 'None'}`,
@@ -189,6 +200,7 @@ export function MapScreen() {
       routePoints.length,
       savedTerritories.length,
       supabaseConfigStatus.isConfigured,
+      territoryOverlapAnalysis,
       territoriesStorageError,
     ],
   );
@@ -619,7 +631,10 @@ export function MapScreen() {
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
         <OnlineTerritoriesLayer territories={onlineTerritoriesWithOwnership} />
         <SavedTerritoriesLayer territories={savedTerritories} />
-        <PolygonPreview geoJSON={polygonPreviewAnalysis.geoJSON} />
+        <PolygonPreview
+          geoJSON={polygonPreviewAnalysis.geoJSON}
+          hasOverlap={polygonPreviewAnalysis.isRendered && territoryOverlapAnalysis.hasOverlap}
+        />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
       {isLoadingLocation ? (

@@ -23,6 +23,17 @@ export const polygonPreviewOutlineStyle = {
   lineWidth: 2.5,
 } as const;
 
+export const polygonPreviewOverlapFillStyle = {
+  fillColor: '#F59E0B',
+  fillOpacity: 0.22,
+} as const;
+
+export const polygonPreviewOverlapOutlineStyle = {
+  lineColor: '#F97316',
+  lineOpacity: 0.98,
+  lineWidth: 3,
+} as const;
+
 export const savedTerritoryFillStyle = {
   fillColor: '#8B5CF6',
   fillOpacity: 0.22,
