@@ -1,4 +1,3 @@
-import { memo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../../config/uiConfig';
@@ -8,7 +7,7 @@ type TerritoryStatsCardProps = {
   areaM2Label: string;
   savedTerritoryCount: number;
   syncStatus: string;
-  trackingActive: boolean;
+  trackingStateLabel: 'Idle' | 'Tracking';
 };
 
 function TerritoryStatsCardComponent({
@@ -16,7 +15,7 @@ function TerritoryStatsCardComponent({
   areaM2Label,
   savedTerritoryCount,
   syncStatus,
-  trackingActive,
+  trackingStateLabel,
 }: TerritoryStatsCardProps) {
   return (
     <View style={styles.card}>
@@ -38,8 +37,8 @@ function TerritoryStatsCardComponent({
         </View>
         <View>
           <Text style={styles.footerLabel}>State</Text>
-          <Text style={[styles.footerValue, trackingActive ? styles.trackingOn : null]}>
-            {trackingActive ? 'Tracking' : 'Idle'}
+          <Text style={[styles.footerValue, trackingStateLabel === 'Tracking' ? styles.trackingOn : null]}>
+            {trackingStateLabel}
           </Text>
         </View>
         <View style={styles.syncBlock}>
@@ -118,4 +117,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export const TerritoryStatsCard = memo(TerritoryStatsCardComponent);
+export const TerritoryStatsCard = TerritoryStatsCardComponent;

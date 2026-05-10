@@ -7,6 +7,7 @@ type DebugOverlayProps = {
   debugLines: readonly string[];
   expanded: boolean;
   onClearSavedTerritories: () => void;
+  onFetchOnlineTerritories: () => void;
   onToggle: () => void;
 };
 
@@ -14,6 +15,7 @@ function DebugOverlayComponent({
   debugLines,
   expanded,
   onClearSavedTerritories,
+  onFetchOnlineTerritories,
   onToggle,
 }: DebugOverlayProps) {
   return (
@@ -30,6 +32,12 @@ function DebugOverlayComponent({
                 {line}
               </Text>
             ))}
+            <Pressable
+              onPress={onFetchOnlineTerritories}
+              style={({ pressed }) => [styles.actionButton, pressed ? styles.pressed : null]}
+            >
+              <Text style={styles.actionLabel}>Fetch Online Territories</Text>
+            </Pressable>
             <Pressable
               onPress={onClearSavedTerritories}
               style={({ pressed }) => [styles.actionButton, pressed ? styles.pressed : null]}

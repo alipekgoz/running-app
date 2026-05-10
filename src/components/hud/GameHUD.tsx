@@ -1,4 +1,3 @@
-import { memo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -19,6 +18,7 @@ type GameHUDProps = {
   debugOpen: boolean;
   gpsReady: boolean;
   onClearTerritories: () => void;
+  onFetchOnlineTerritories: () => void;
   onResetIdentity: () => void;
   onSaveTerritory: () => void;
   onStartTracking: () => void;
@@ -35,6 +35,8 @@ type GameHUDProps = {
 };
 
 function GameHUDComponent(props: GameHUDProps) {
+  const trackingStateLabel: 'Idle' | 'Tracking' = props.trackingActive ? 'Tracking' : 'Idle';
+
   return (
     <SafeAreaView edges={['top', 'bottom']} pointerEvents="box-none" style={styles.safeArea}>
       <View pointerEvents="box-none" style={styles.container}>
@@ -50,7 +52,7 @@ function GameHUDComponent(props: GameHUDProps) {
             areaM2Label={props.areaM2Label}
             savedTerritoryCount={props.savedTerritoryCount}
             syncStatus={props.syncStatus}
-            trackingActive={props.trackingActive}
+            trackingStateLabel={trackingStateLabel}
           />
           <PlayerIdentityCard
             onResetIdentity={props.onResetIdentity}
@@ -65,6 +67,7 @@ function GameHUDComponent(props: GameHUDProps) {
             debugLines={props.debugLines}
             expanded={props.debugOpen}
             onClearSavedTerritories={props.onClearTerritories}
+            onFetchOnlineTerritories={props.onFetchOnlineTerritories}
             onToggle={props.onToggleDebug}
           />
           <TrackingControls
@@ -107,4 +110,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export const GameHUD = memo(GameHUDComponent);
+export const GameHUD = GameHUDComponent;

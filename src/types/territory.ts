@@ -12,3 +12,16 @@ export type LocalSavedTerritory = TerritoryPreviewPayload & {
   id: string;
   status: 'local_saved';
 };
+
+export type OnlineTerritory = {
+  areaHectare: number;
+  areaM2: number;
+  coordinates: Coordinates[];
+  createdAt: string;
+  deviceId: string | null;
+  id: string;
+  isMine?: boolean;
+  sourceRoutePointCount: number;
+  syncStatus: string;
+  updatedAt: string;
+};

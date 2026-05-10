@@ -1,15 +1,16 @@
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { GameHUD } from '../components/hud/GameHUD';
+import { OnlineTerritoriesLayer } from '../components/map/OnlineTerritoriesLayer';
 import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../config/uiConfig';
-import type { Coordinates, GpsPoint, LocalSavedTerritory, PlayerProfile } from '../types';
+import type { Coordinates, GpsPoint, LocalSavedTerritory, OnlineTerritory, PlayerProfile } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
   clearPlayerIdentity,
@@ -21,7 +22,7 @@ import {
   loadSavedTerritories,
   saveSavedTerritories,
 } from '../services/territoryStorageService';
-import { isBackendConfigured, uploadTerritories } from '../services/territoryBackendService';
+import { fetchTerritories, isBackendConfigured, uploadTerritories } from '../services/territoryBackendService';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
 import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
@@ -54,6 +55,10 @@ export function MapScreen() {
   const [isPlayerLoaded, setIsPlayerLoaded] = useState(false);
   const [isPlayerStorageValid, setIsPlayerStorageValid] = useState(true);
   const [playerIdentityStatus, setPlayerIdentityStatus] = useState('Player identity not loaded yet.');
+  const [onlineTerritories, setOnlineTerritories] = useState<OnlineTerritory[]>([]);
+  const [onlineTerritoriesLoading, setOnlineTerritoriesLoading] = useState(false);
+  const [onlineTerritoriesError, setOnlineTerritoriesError] = useState<string | null>(null);
+  const [lastFetchStatus, setLastFetchStatus] = useState('No online fetch yet.');
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
@@ -91,6 +96,17 @@ export function MapScreen() {
   const supabaseConfigStatus = useMemo(() => getSupabaseConfigStatus(), []);
   const backendConfigured = isBackendConfigured();
   const isSyncEnabled = backendConfigured && savedTerritories.length > 0;
+  const onlineTerritoriesWithOwnership = useMemo(
+    () =>
+      onlineTerritories.map((territory) => ({
+        ...territory,
+        isMine:
+          currentPlayerProfile?.playerId != null &&
+          territory.deviceId != null &&
+          territory.deviceId === currentPlayerProfile.playerId,
+      })),
+    [currentPlayerProfile?.playerId, onlineTerritories],
+  );
   const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
   const playerCreatedAtLabel = useMemo(
     () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
@@ -122,6 +138,12 @@ export function MapScreen() {
       `Preview rejection: ${polygonPreviewAnalysis.rejectionReason ?? 'None'}`,
       `Fill point count: ${polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}`,
       `Saved territory count: ${savedTerritories.length}`,
+      `Online territory count: ${onlineTerritoriesWithOwnership.length}`,
+      `Online fetch loading: ${onlineTerritoriesLoading ? 'Yes' : 'No'}`,
+      `Last fetch status: ${lastFetchStatus}`,
+      `Fetch error: ${onlineTerritoriesError ?? 'None'}`,
+      `Backend configured: ${backendConfigured ? 'Yes' : 'No'}`,
+      `Current player short id: ${playerIdShort}`,
       `Storage error: ${territoriesStorageError ?? 'None'}`,
       `Current player id: ${currentPlayerProfile?.playerId ?? 'Unavailable'}`,
       `Player loaded: ${isPlayerLoaded ? 'Yes' : 'No'}`,
@@ -142,18 +164,24 @@ export function MapScreen() {
     [
       currentLocation,
       currentPlayerProfile,
+      backendConfigured,
       isPlayerLoaded,
       isPlayerStorageValid,
       isRouteLineRendered,
       isSaveTerritoryEnabled,
       isSyncEnabled,
+      lastFetchStatus,
       lastRejectedReason,
       lastRoutePoint,
       lastSaveStatus,
       lastSavedTerritory?.areaM2,
       lastSyncStatus,
       locationDebugText,
+      onlineTerritoriesError,
+      onlineTerritoriesLoading,
+      onlineTerritoriesWithOwnership.length,
       playerIdentityStatus,
+      playerIdShort,
       polygonAnalysis,
       polygonAreaAnalysis,
       polygonPreviewAnalysis,
@@ -277,8 +305,18 @@ export function MapScreen() {
       }
     }
 
+    async function hydrateOnlineTerritories(): Promise<void> {
+      if (!backendConfigured) {
+        setLastFetchStatus('Backend config missing. Online fetch skipped.');
+        return;
+      }
+
+      await loadOnlineTerritories();
+    }
+
     void hydrateSavedTerritories();
     void hydratePlayerIdentity();
+    void hydrateOnlineTerritories();
     void loadCurrentLocation();
 
     const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
@@ -325,7 +363,7 @@ export function MapScreen() {
         autoSaveTimeoutRef.current = null;
       }
     };
-  }, [hasAutoSavedCurrentRoute, territoryPreviewPayload, territoryPreviewSignature]);
+  }, [hasAutoSavedCurrentRoute, saveTerritory, territoryPreviewPayload, territoryPreviewSignature]);
 
   useEffect(() => {
     if (territoriesLoading) {
@@ -345,6 +383,39 @@ export function MapScreen() {
 
     void persistSavedTerritories();
   }, [savedTerritories, territoriesLoading]);
+
+  async function loadOnlineTerritories(): Promise<void> {
+    if (!backendConfigured) {
+      setOnlineTerritories([]);
+      setOnlineTerritoriesError(null);
+      setLastFetchStatus('Backend config missing. Online fetch skipped.');
+      return;
+    }
+
+    try {
+      setOnlineTerritoriesLoading(true);
+      setOnlineTerritoriesError(null);
+      const result = await fetchTerritories();
+
+      if (!result.success) {
+        setOnlineTerritories([]);
+        setOnlineTerritoriesError(result.message);
+        setLastFetchStatus(`Fetch failed: ${result.message}`);
+        return;
+      }
+
+      setOnlineTerritories(result.territories);
+      setLastFetchStatus(result.message);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown online fetch error';
+
+      setOnlineTerritories([]);
+      setOnlineTerritoriesError(errorMessage);
+      setLastFetchStatus(`Fetch failed: ${errorMessage}`);
+    } finally {
+      setOnlineTerritoriesLoading(false);
+    }
+  }
 
   async function startTracking(): Promise<void> {
     try {
@@ -421,12 +492,16 @@ export function MapScreen() {
     }
   }
 
-  function stopTracking(): void {
+  const stopTracking = useCallback((reason: 'auto_save' | 'manual' = 'manual'): void => {
     locationSubscriptionRef.current?.remove();
     locationSubscriptionRef.current = null;
     setIsTracking(false);
-    setLocationDebugText('GPS tracking stopped.');
-  }
+    setLocationDebugText(
+      reason === 'auto_save'
+        ? 'Tracking stopped automatically after territory save.'
+        : 'GPS tracking stopped.',
+    );
+  }, []);
 
   function openLocationSettings(): void {
     void Linking.openSettings();
@@ -480,6 +555,9 @@ export function MapScreen() {
       return;
     }
 
+    let saveSucceeded = false;
+    let autoStopAfterSave = false;
+
     setSavedTerritories((previousTerritories) => {
       const lastSaved = previousTerritories.at(-1) ?? null;
 
@@ -498,8 +576,11 @@ export function MapScreen() {
         status: 'local_saved',
       };
 
+      saveSucceeded = true;
+
       if (trigger === 'auto') {
         setHasAutoSavedCurrentRoute(true);
+        autoStopAfterSave = isTracking;
       }
 
       setLastSaveStatus(
@@ -509,6 +590,15 @@ export function MapScreen() {
       );
       return [...previousTerritories, nextTerritory];
     });
+
+    if (!saveSucceeded) {
+      return;
+    }
+
+    if (trigger === 'auto' && autoStopAfterSave) {
+      stopTracking('auto_save');
+      setLastSaveStatus('Territory saved. Tracking stopped automatically.');
+    }
   }
 
   if (!MAPBOX_ACCESS_TOKEN) {
@@ -527,6 +617,7 @@ export function MapScreen() {
       <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
         <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
+        <OnlineTerritoriesLayer territories={onlineTerritoriesWithOwnership} />
         <SavedTerritoriesLayer territories={savedTerritories} />
         <PolygonPreview geoJSON={polygonPreviewAnalysis.geoJSON} />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
@@ -572,6 +663,9 @@ export function MapScreen() {
         onClearTerritories={() => {
           void clearSavedTerritories();
         }}
+        onFetchOnlineTerritories={() => {
+          void loadOnlineTerritories();
+        }}
         onResetIdentity={() => {
           void resetPlayerIdentity();
         }}
@@ -581,7 +675,9 @@ export function MapScreen() {
         onStartTracking={() => {
           void startTracking();
         }}
-        onStopTracking={stopTracking}
+        onStopTracking={() => {
+          stopTracking('manual');
+        }}
         onSyncTerritories={() => {
           void syncLocalTerritories();
         }}
