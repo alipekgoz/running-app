@@ -122,52 +122,52 @@ function getBoundingBoxIntersectionRatio(
 }
 
 function getApproximateCoverageRatio(
-  previewCoordinates: readonly Coordinates[],
-  territoryCoordinates: readonly Coordinates[],
+  sampledCoordinates: readonly Coordinates[],
+  coveringCoordinates: readonly Coordinates[],
 ): number {
-  const previewBoundingBox = calculateBoundingBox(previewCoordinates);
+  const sampledBoundingBox = calculateBoundingBox(sampledCoordinates);
 
-  if (!previewBoundingBox) {
+  if (!sampledBoundingBox) {
     return 0;
   }
 
-  const previewRing = ensureClosedRing(previewCoordinates);
-  const territoryRing = ensureClosedRing(territoryCoordinates);
+  const sampledRing = ensureClosedRing(sampledCoordinates);
+  const coveringRing = ensureClosedRing(coveringCoordinates);
   const sampleSteps = DEFAULT_SAMPLE_GRID_SIZE;
   let coveredSamples = 0;
-  let previewSamples = 0;
+  let sampledPolygonSamples = 0;
 
   for (let latitudeStep = 0; latitudeStep <= sampleSteps; latitudeStep += 1) {
     for (let longitudeStep = 0; longitudeStep <= sampleSteps; longitudeStep += 1) {
       const samplePoint: Coordinates = {
         latitude:
-          previewBoundingBox.minLatitude +
-          ((previewBoundingBox.maxLatitude - previewBoundingBox.minLatitude) * latitudeStep) / sampleSteps,
+          sampledBoundingBox.minLatitude +
+          ((sampledBoundingBox.maxLatitude - sampledBoundingBox.minLatitude) * latitudeStep) / sampleSteps,
         longitude:
-          previewBoundingBox.minLongitude +
-          ((previewBoundingBox.maxLongitude - previewBoundingBox.minLongitude) * longitudeStep) / sampleSteps,
+          sampledBoundingBox.minLongitude +
+          ((sampledBoundingBox.maxLongitude - sampledBoundingBox.minLongitude) * longitudeStep) / sampleSteps,
       };
 
-      if (!isPointInsidePolygon(samplePoint, previewRing)) {
+      if (!isPointInsidePolygon(samplePoint, sampledRing)) {
         continue;
       }
 
-      previewSamples += 1;
+      sampledPolygonSamples += 1;
 
       if (
-        isPointInsidePolygon(samplePoint, territoryRing) ||
-        isPointNearPolygon(samplePoint, territoryRing, DEFAULT_PROXIMITY_THRESHOLD_METERS)
+        isPointInsidePolygon(samplePoint, coveringRing) ||
+        isPointNearPolygon(samplePoint, coveringRing, DEFAULT_PROXIMITY_THRESHOLD_METERS)
       ) {
         coveredSamples += 1;
       }
     }
   }
 
-  if (previewSamples === 0) {
+  if (sampledPolygonSamples === 0) {
     return 0;
   }
 
-  return coveredSamples / previewSamples;
+  return coveredSamples / sampledPolygonSamples;
 }
 
 export function estimateTerritoryCoverageRatio(
@@ -182,6 +182,20 @@ export function estimateTerritoryCoverageRatio(
   }
 
   return getApproximateCoverageRatio(validPreviewCoordinates, validTerritoryCoordinates);
+}
+
+export function estimateCapturedTerritoryCoverageRatio(
+  previewCoordinates: readonly Coordinates[],
+  territoryCoordinates: readonly Coordinates[],
+): number {
+  const validPreviewCoordinates = ensureClosedRing(filterValidCoordinates(previewCoordinates));
+  const validTerritoryCoordinates = ensureClosedRing(filterValidCoordinates(territoryCoordinates));
+
+  if (validPreviewCoordinates.length < 4 || validTerritoryCoordinates.length < 4) {
+    return 0;
+  }
+
+  return getApproximateCoverageRatio(validTerritoryCoordinates, validPreviewCoordinates);
 }
 
 function getTerritoryOverlapRatio(

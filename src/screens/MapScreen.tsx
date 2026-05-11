@@ -3,6 +3,8 @@ import * as Location from 'expo-location';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { CaptureConfirmationCard } from '../components/hud/CaptureConfirmationCard';
+import { CaptureStatusBanner } from '../components/hud/CaptureStatusBanner';
 import { GameHUD } from '../components/hud/GameHUD';
 import { OnlineTerritoriesLayer } from '../components/map/OnlineTerritoriesLayer';
 import { RouteLine } from '../components/map/RouteLine';
@@ -22,7 +24,12 @@ import {
   loadSavedTerritories,
   saveSavedTerritories,
 } from '../services/territoryStorageService';
-import { fetchTerritories, isBackendConfigured, uploadTerritories } from '../services/territoryBackendService';
+import {
+  fetchTerritories,
+  isBackendConfigured,
+  transferTerritoryOwnership,
+  uploadTerritories,
+} from '../services/territoryBackendService';
 import { CLAIM_RULE_CONFIG } from '../config/claimRulesConfig';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
@@ -32,6 +39,7 @@ import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreview
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
 import { createId } from '../utils/createId';
+import { executeTerritoryCapture } from '../utils/executeTerritoryCapture';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 import { validateTerritoryClaim } from '../utils/validateTerritoryClaim';
 
@@ -63,6 +71,10 @@ export function MapScreen() {
   const [onlineTerritoriesLoading, setOnlineTerritoriesLoading] = useState(false);
   const [onlineTerritoriesError, setOnlineTerritoriesError] = useState<string | null>(null);
   const [lastFetchStatus, setLastFetchStatus] = useState('No online fetch yet.');
+  const [capturePromptVisible, setCapturePromptVisible] = useState(false);
+  const [captureStatusMessage, setCaptureStatusMessage] = useState<string | null>(null);
+  const [captureStatusTone, setCaptureStatusTone] = useState<'available' | 'failed' | 'success'>('available');
+  const [isCaptureProcessing, setIsCaptureProcessing] = useState(false);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
@@ -157,6 +169,10 @@ export function MapScreen() {
     [polygonAreaAnalysis.result?.areaHectare],
   );
   const gpsReady = currentLocation !== null && !locationError && isLocationServicesEnabled;
+  const captureCoveragePercentLabel = useMemo(
+    () => `${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
+    [claimValidationResult.estimatedEnemyCoveragePercent],
+  );
   const debugLines = useMemo(
     () => [
       `Location: ${locationDebugText}`,
@@ -185,10 +201,14 @@ export function MapScreen() {
       `Overlap percent rounded: ${Math.round(conflictVisualizationState.overlapPercent)}%`,
       `Overlaps mine: ${conflictVisualizationState.overlapsMine ? 'Yes' : 'No'}`,
       `Overlaps others: ${conflictVisualizationState.overlapsOthers ? 'Yes' : 'No'}`,
+      `Overlap telemetry percent: ${claimValidationResult.overlapPercent.toFixed(1)}%`,
       `Claim allowed: ${claimValidationResult.isClaimAllowed ? 'Yes' : 'No'}`,
       `Claim reject reason: ${claimValidationResult.rejectReason}`,
       `Capture candidate: ${claimValidationResult.isCaptureCandidate ? 'Yes' : 'No'}`,
-      `Estimated enemy coverage percent: ${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
+      `Capture allowed: ${claimValidationResult.isCaptureAllowed ? 'Yes' : 'No'}`,
+      `Capture prompt visible: ${capturePromptVisible ? 'Yes' : 'No'}`,
+      `Capture processing: ${isCaptureProcessing ? 'Yes' : 'No'}`,
+      `Capture telemetry enemy coverage: ${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
       `Claim overlap percent: ${claimValidationResult.overlapPercent.toFixed(1)}%`,
       `Online fetch loading: ${onlineTerritoriesLoading ? 'Yes' : 'No'}`,
       `Last fetch status: ${lastFetchStatus}`,
@@ -218,9 +238,11 @@ export function MapScreen() {
       backendConfigured,
       isPlayerLoaded,
       isPlayerStorageValid,
+      isCaptureProcessing,
       isRouteLineRendered,
       isSaveTerritoryEnabled,
       isSyncEnabled,
+      capturePromptVisible,
       lastFetchStatus,
       lastRejectedReason,
       lastRoutePoint,
@@ -389,6 +411,22 @@ export function MapScreen() {
   }, []);
 
   useEffect(() => {
+    if (!CLAIM_RULE_CONFIG.captureConfirmationEnabled) {
+      setCapturePromptVisible(false);
+      return;
+    }
+
+    if (claimValidationResult.isCaptureAllowed && territoryPreviewPayload) {
+      setCapturePromptVisible(true);
+      setCaptureStatusTone('available');
+      setCaptureStatusMessage(`Enemy coverage ${captureCoveragePercentLabel}. Confirm to capture.`);
+      return;
+    }
+
+    setCapturePromptVisible(false);
+  }, [captureCoveragePercentLabel, claimValidationResult.isCaptureAllowed, territoryPreviewPayload]);
+
+  useEffect(() => {
     if (hasAutoSavedCurrentRoute) {
       if (autoSaveTimeoutRef.current) {
         clearTimeout(autoSaveTimeoutRef.current);
@@ -403,6 +441,15 @@ export function MapScreen() {
         clearTimeout(autoSaveTimeoutRef.current);
         autoSaveTimeoutRef.current = null;
       }
+      return;
+    }
+
+    if (claimValidationResult.isCaptureAllowed) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      setLastSaveStatus('Capture available: confirmation required.');
       return;
     }
 
@@ -612,9 +659,86 @@ export function MapScreen() {
     }
   }
 
+  async function confirmTerritoryCapture(): Promise<void> {
+    if (!territoryPreviewPayload) {
+      setCaptureStatusTone('failed');
+      setCaptureStatusMessage('Capture failed: preview is not ready.');
+      return;
+    }
+
+    if (!claimValidationResult.isCaptureAllowed) {
+      setCapturePromptVisible(false);
+      setCaptureStatusTone('failed');
+      setCaptureStatusMessage('Capture failed: territory is no longer eligible.');
+      return;
+    }
+
+    if (!backendConfigured) {
+      setCaptureStatusTone('failed');
+      setCaptureStatusMessage('Capture failed: backend is not configured.');
+      return;
+    }
+
+    const captureOperation = executeTerritoryCapture(
+      territoryPreviewPayload,
+      onlineTerritoriesWithOwnership,
+      claimValidationResult,
+    );
+
+    if (!captureOperation.result.didCapture) {
+      setCapturePromptVisible(false);
+      setCaptureStatusTone('failed');
+      setCaptureStatusMessage('Capture failed: no enemy territory met the threshold.');
+      return;
+    }
+
+    try {
+      setIsCaptureProcessing(true);
+      const backendResult = await transferTerritoryOwnership(
+        captureOperation.capturedTerritoryIds,
+        captureOperation.newLocalTerritory,
+        currentPlayerProfile?.playerId ?? null,
+      );
+
+      if (!backendResult.success) {
+        setCaptureStatusTone('failed');
+        setCaptureStatusMessage(`Capture failed: ${backendResult.message}`);
+        setLastSyncStatus(`Capture sync failed: ${backendResult.message}`);
+        return;
+      }
+
+      setSavedTerritories((previousTerritories) => {
+        const filteredTerritories = previousTerritories.filter(
+          (territory) => !captureOperation.capturedTerritoryIds.includes(territory.id),
+        );
+
+        return [...filteredTerritories, captureOperation.newLocalTerritory];
+      });
+      setHasAutoSavedCurrentRoute(true);
+      setCapturePromptVisible(false);
+      setCaptureStatusTone('success');
+      setCaptureStatusMessage(
+        `Captured ${captureOperation.capturedTerritoryIds.length} territory and transferred ownership.`,
+      );
+      setLastSaveStatus('Capture completed.');
+      setLastSyncStatus(backendResult.message);
+      await loadOnlineTerritories();
+    } finally {
+      setIsCaptureProcessing(false);
+    }
+  }
+
   function saveTerritory(trigger: 'auto' | 'manual' = 'manual'): void {
     if (!territoryPreviewPayload || !territoryPreviewSignature) {
       setLastSaveStatus('Preview is not ready to save.');
+      return;
+    }
+
+    if (claimValidationResult.isCaptureAllowed) {
+      setCapturePromptVisible(true);
+      setCaptureStatusTone('available');
+      setCaptureStatusMessage(`Enemy coverage ${captureCoveragePercentLabel}. Confirm to capture.`);
+      setLastSaveStatus('Capture available. Waiting for confirmation.');
       return;
     }
 
@@ -702,6 +826,23 @@ export function MapScreen() {
         />
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
+      <CaptureStatusBanner
+        message={captureStatusMessage ?? ''}
+        tone={captureStatusTone}
+        visible={captureStatusMessage !== null}
+      />
+      <CaptureConfirmationCard
+        coveragePercentLabel={captureCoveragePercentLabel}
+        onCancel={() => {
+          setCapturePromptVisible(false);
+          setCaptureStatusMessage('Capture cancelled.');
+          setCaptureStatusTone('failed');
+        }}
+        onConfirm={() => {
+          void confirmTerritoryCapture();
+        }}
+        visible={capturePromptVisible && !isCaptureProcessing}
+      />
       {isLoadingLocation ? (
         <View style={styles.overlay}>
           <ActivityIndicator size="small" />
@@ -735,7 +876,9 @@ export function MapScreen() {
         areaHectareLabel={areaHectareLabel}
         areaM2Label={areaM2Label}
         backendConfigured={backendConfigured}
-        canSaveTerritory={isSaveTerritoryEnabled && claimValidationResult.isClaimAllowed}
+        canSaveTerritory={
+          isSaveTerritoryEnabled && (claimValidationResult.isClaimAllowed || claimValidationResult.isCaptureAllowed)
+        }
         canSync={isSyncEnabled}
         claimLabel={claimLabel}
         claimSeverity={getClaimSeverity(claimValidationResult)}

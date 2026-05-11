@@ -1,4 +1,4 @@
-import type { Coordinates, LocalSavedTerritory, OnlineTerritory } from '../types';
+import type { Coordinates, LocalSavedTerritory, OnlineTerritory, TerritoryCaptureResult } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import { getSupabaseClient } from './supabaseClient';
 
@@ -11,6 +11,12 @@ type FetchTerritoriesResult = {
   message: string;
   success: boolean;
   territories: OnlineTerritory[];
+};
+
+type CaptureTransferResult = {
+  message: string;
+  success: boolean;
+  territoryCaptureResult: TerritoryCaptureResult;
 };
 
 type TerritoryRow = {
@@ -224,6 +230,104 @@ export async function uploadTerritories(
     return {
       message: errorMessage,
       success: false,
+    };
+  }
+}
+
+export async function transferTerritoryOwnership(
+  capturedTerritoryIds: readonly string[],
+  newTerritory: LocalSavedTerritory,
+  playerId?: string | null,
+): Promise<CaptureTransferResult> {
+  const supabase = getSupabaseClient();
+  const captureTimestamp = new Date().toISOString();
+
+  if (!isBackendConfigured() || !supabase) {
+    return {
+      message: 'Backend is not configured.',
+      success: false,
+      territoryCaptureResult: {
+        captureReason: 'capture_failed',
+        captureTimestamp,
+        capturedTerritoryIds: [...capturedTerritoryIds],
+        didCapture: false,
+        previousOwnerIds: [],
+      },
+    };
+  }
+
+  if (capturedTerritoryIds.length === 0) {
+    return {
+      message: 'No capture targets were found.',
+      success: false,
+      territoryCaptureResult: {
+        captureReason: 'capture_failed',
+        captureTimestamp,
+        capturedTerritoryIds: [],
+        didCapture: false,
+        previousOwnerIds: [],
+      },
+    };
+  }
+
+  try {
+    const { error: deleteError } = await supabase.from('territories').delete().in('id', [...capturedTerritoryIds]);
+
+    if (deleteError) {
+      return {
+        message: deleteError.message,
+        success: false,
+        territoryCaptureResult: {
+          captureReason: 'capture_failed',
+          captureTimestamp,
+          capturedTerritoryIds: [...capturedTerritoryIds],
+          didCapture: false,
+          previousOwnerIds: [],
+        },
+      };
+    }
+
+    const { error: insertError } = await supabase.from('territories').insert(toTerritoryInsertPayload(newTerritory, playerId));
+
+    if (insertError) {
+      return {
+        message: insertError.message,
+        success: false,
+        territoryCaptureResult: {
+          captureReason: 'capture_failed',
+          captureTimestamp,
+          capturedTerritoryIds: [...capturedTerritoryIds],
+          didCapture: false,
+          previousOwnerIds: [],
+        },
+      };
+    }
+
+    return {
+      message: `Captured ${capturedTerritoryIds.length} territory slot${capturedTerritoryIds.length === 1 ? '' : 's'}.`,
+      success: true,
+      territoryCaptureResult: {
+        captureReason: 'enemy_territory_captured',
+        captureTimestamp,
+        capturedTerritoryIds: [...capturedTerritoryIds],
+        didCapture: true,
+        newTerritoryId: newTerritory.id,
+        previousOwnerIds: [],
+      },
+    };
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown capture transfer error';
+
+    return {
+      message: errorMessage,
+      success: false,
+      territoryCaptureResult: {
+        captureReason: 'capture_failed',
+        captureTimestamp,
+        capturedTerritoryIds: [...capturedTerritoryIds],
+        didCapture: false,
+        previousOwnerIds: [],
+      },
     };
   }
 }

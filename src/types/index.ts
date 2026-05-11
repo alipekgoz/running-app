@@ -1,5 +1,5 @@
 import type { Coordinates } from './location';
-import type { ClaimRejectReason, ClaimValidationResult } from './claim';
+import type { ClaimRejectReason, ClaimValidationResult, TerritoryCaptureResult } from './claim';
 import type { PolygonAreaResult } from './geo';
 import type { PlayerProfile } from './player';
 import type { ConflictSeverity, ConflictVisualizationState } from './conflict';
@@ -7,7 +7,7 @@ import type { LocalSavedTerritory, OnlineTerritory, TerritoryPreviewPayload } fr
 import type { OverlapComparableTerritory, TerritoryOverlapAnalysis } from './overlap';
 
 export type { Coordinates } from './location';
-export type { ClaimRejectReason, ClaimValidationResult } from './claim';
+export type { ClaimRejectReason, ClaimValidationResult, TerritoryCaptureResult } from './claim';
 export type { PolygonAreaResult } from './geo';
 export type { PlayerProfile } from './player';
 export type { ConflictSeverity, ConflictVisualizationState } from './conflict';

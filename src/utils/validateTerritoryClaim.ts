@@ -6,7 +6,7 @@ import type {
   OnlineTerritory,
   TerritoryOverlapAnalysis,
 } from '../types';
-import { estimateTerritoryCoverageRatio } from './analyzeTerritoryOverlap';
+import { estimateCapturedTerritoryCoverageRatio } from './analyzeTerritoryOverlap';
 import { filterValidCoordinates } from './geo/coordinateValidation';
 
 function clampPercent(value: number): number {
@@ -34,7 +34,7 @@ function getEstimatedEnemyCoveragePercent(
       continue;
     }
 
-    const nextCoverageRatio = estimateTerritoryCoverageRatio(validPreviewPolygon, territory.coordinates);
+    const nextCoverageRatio = estimateCapturedTerritoryCoverageRatio(validPreviewPolygon, territory.coordinates);
     highestEnemyCoverageRatio = Math.max(highestEnemyCoverageRatio, nextCoverageRatio);
   }
 
@@ -51,11 +51,13 @@ export function validateTerritoryClaim(
   const overlapPercent = clampPercent(overlapAnalysis.estimatedOverlapPercent);
   const estimatedEnemyCoveragePercent = getEstimatedEnemyCoveragePercent(onlineTerritories, validPreviewPolygon);
   const isCaptureCandidate = estimatedEnemyCoveragePercent >= CLAIM_RULE_CONFIG.captureCandidateThresholdPercent;
+  const isCaptureAllowed = isCaptureCandidate && conflictVisualizationState.overlapsOthers;
 
   if (validPreviewPolygon.length < 3) {
     return {
       estimatedEnemyCoveragePercent,
       isCaptureCandidate: false,
+      isCaptureAllowed: false,
       isClaimAllowed: false,
       overlapPercent,
       overlapsMine: conflictVisualizationState.overlapsMine,
@@ -71,6 +73,7 @@ export function validateTerritoryClaim(
     return {
       estimatedEnemyCoveragePercent,
       isCaptureCandidate,
+      isCaptureAllowed,
       isClaimAllowed: false,
       overlapPercent,
       overlapsMine: conflictVisualizationState.overlapsMine,
@@ -85,6 +88,7 @@ export function validateTerritoryClaim(
   return {
     estimatedEnemyCoveragePercent,
     isCaptureCandidate,
+    isCaptureAllowed,
     isClaimAllowed: true,
     overlapPercent,
     overlapsMine: conflictVisualizationState.overlapsMine,
