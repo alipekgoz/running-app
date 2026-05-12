@@ -6,19 +6,20 @@ import { uiColors, uiRadius, uiSpacing, uiTypography } from '../../config/uiConf
 type CaptureStatusTone = 'available' | 'failed' | 'success';
 
 type CaptureStatusBannerProps = {
+  label?: string;
   message: string;
   tone: CaptureStatusTone;
   visible: boolean;
 };
 
-function CaptureStatusBannerComponent({ message, tone, visible }: CaptureStatusBannerProps) {
+function CaptureStatusBannerComponent({ label, message, tone, visible }: CaptureStatusBannerProps) {
   if (!visible) {
     return null;
   }
 
   return (
     <View pointerEvents="none" style={[styles.container, toneStyles[tone].container]}>
-      <Text style={styles.label}>{toneStyles[tone].title}</Text>
+      <Text style={styles.label}>{label ?? toneStyles[tone].title}</Text>
       <Text style={styles.message}>{message}</Text>
     </View>
   );

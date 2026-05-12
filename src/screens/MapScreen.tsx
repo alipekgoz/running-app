@@ -48,6 +48,7 @@ if (MAPBOX_ACCESS_TOKEN) {
 }
 
 export function MapScreen() {
+  const autoSaveSuccessBannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [currentLocation, setCurrentLocation] = useState<Coordinates | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isLocationServicesEnabled, setIsLocationServicesEnabled] = useState(true);
@@ -75,6 +76,7 @@ export function MapScreen() {
   const [captureStatusMessage, setCaptureStatusMessage] = useState<string | null>(null);
   const [captureStatusTone, setCaptureStatusTone] = useState<'available' | 'failed' | 'success'>('available');
   const [isCaptureProcessing, setIsCaptureProcessing] = useState(false);
+  const [autoSaveSuccessMessage, setAutoSaveSuccessMessage] = useState<string | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
@@ -406,6 +408,7 @@ export function MapScreen() {
     return () => {
       locationSubscriptionRef.current?.remove();
       autoSaveTimeoutRef.current && clearTimeout(autoSaveTimeoutRef.current);
+      autoSaveSuccessBannerTimeoutRef.current && clearTimeout(autoSaveSuccessBannerTimeoutRef.current);
       appStateSubscription.remove();
     };
   }, []);
@@ -425,55 +428,6 @@ export function MapScreen() {
 
     setCapturePromptVisible(false);
   }, [captureCoveragePercentLabel, claimValidationResult.isCaptureAllowed, territoryPreviewPayload]);
-
-  useEffect(() => {
-    if (hasAutoSavedCurrentRoute) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-      setLastSaveStatus('Auto-save skipped: already saved this route');
-      return;
-    }
-
-    if (!territoryPreviewPayload || !territoryPreviewSignature) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-      return;
-    }
-
-    if (claimValidationResult.isCaptureAllowed) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-      setLastSaveStatus('Capture available: confirmation required.');
-      return;
-    }
-
-    if (!claimValidationResult.isClaimAllowed) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-      setLastSaveStatus(`Claim blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`);
-      return;
-    }
-
-    autoSaveTimeoutRef.current = setTimeout(() => {
-      saveTerritory('auto');
-      autoSaveTimeoutRef.current = null;
-    }, 2000);
-
-    return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-    };
-  }, [claimValidationResult, hasAutoSavedCurrentRoute, saveTerritory, territoryPreviewPayload, territoryPreviewSignature]);
 
   useEffect(() => {
     if (territoriesLoading) {
@@ -531,6 +485,7 @@ export function MapScreen() {
     try {
       setLocationError(null);
       setLastRejectedReason(null);
+      setAutoSaveSuccessMessage(null);
       setRoutePoints([]);
       setHasAutoSavedCurrentRoute(false);
       setLocationDebugText('Starting GPS tracking...');
@@ -603,6 +558,10 @@ export function MapScreen() {
   }
 
   const stopTracking = useCallback((reason: 'auto_save' | 'manual' = 'manual'): void => {
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+      autoSaveTimeoutRef.current = null;
+    }
     locationSubscriptionRef.current?.remove();
     locationSubscriptionRef.current = null;
     setIsTracking(false);
@@ -611,6 +570,18 @@ export function MapScreen() {
         ? 'Tracking stopped automatically after territory save.'
         : 'GPS tracking stopped.',
     );
+  }, []);
+
+  const showAutoSaveSuccessBanner = useCallback((): void => {
+    if (autoSaveSuccessBannerTimeoutRef.current) {
+      clearTimeout(autoSaveSuccessBannerTimeoutRef.current);
+    }
+
+    setAutoSaveSuccessMessage('Bölgeniz kaydedildi');
+    autoSaveSuccessBannerTimeoutRef.current = setTimeout(() => {
+      setAutoSaveSuccessMessage(null);
+      autoSaveSuccessBannerTimeoutRef.current = null;
+    }, 2500);
   }, []);
 
   function openLocationSettings(): void {
@@ -728,7 +699,7 @@ export function MapScreen() {
     }
   }
 
-  function saveTerritory(trigger: 'auto' | 'manual' = 'manual'): void {
+  const saveTerritory = useCallback((trigger: 'auto' | 'manual' = 'manual'): void => {
     if (!territoryPreviewPayload || !territoryPreviewSignature) {
       setLastSaveStatus('Preview is not ready to save.');
       return;
@@ -751,51 +722,94 @@ export function MapScreen() {
       return;
     }
 
-    let saveSucceeded = false;
-    let autoStopAfterSave = false;
+    const previousTerritories = savedTerritories;
+    const lastSaved = previousTerritories.at(-1) ?? null;
 
-    setSavedTerritories((previousTerritories) => {
-      const lastSaved = previousTerritories.at(-1) ?? null;
-
-      if (
-        lastSaved &&
-        Math.abs(lastSaved.areaM2 - territoryPreviewPayload.areaM2) < 0.01 &&
-        lastSaved.sourceRoutePointCount === territoryPreviewPayload.sourceRoutePointCount
-      ) {
-        setLastSaveStatus(trigger === 'auto' ? 'Auto-save skipped: already saved.' : 'This territory is already saved.');
-        return previousTerritories;
-      }
-
-      const nextTerritory: LocalSavedTerritory = {
-        ...territoryPreviewPayload,
-        id: createId(),
-        status: 'local_saved',
-      };
-
-      saveSucceeded = true;
-
-      if (trigger === 'auto') {
-        setHasAutoSavedCurrentRoute(true);
-        autoStopAfterSave = isTracking;
-      }
-
-      setLastSaveStatus(
-        trigger === 'auto'
-          ? `Auto-saved territory ${previousTerritories.length + 1}.`
-          : `Saved territory ${previousTerritories.length + 1}.`,
-      );
-      return [...previousTerritories, nextTerritory];
-    });
-
-    if (!saveSucceeded) {
+    if (
+      lastSaved &&
+      Math.abs(lastSaved.areaM2 - territoryPreviewPayload.areaM2) < 0.01 &&
+      lastSaved.sourceRoutePointCount === territoryPreviewPayload.sourceRoutePointCount
+    ) {
+      setLastSaveStatus(trigger === 'auto' ? 'Auto-save skipped: already saved.' : 'This territory is already saved.');
       return;
     }
 
-    if (trigger === 'auto' && autoStopAfterSave) {
+    const nextTerritory: LocalSavedTerritory = {
+      ...territoryPreviewPayload,
+      id: createId(),
+      status: 'local_saved',
+    };
+
+    setSavedTerritories([...previousTerritories, nextTerritory]);
+    setLastSaveStatus(
+      trigger === 'auto'
+        ? `Auto-saved territory ${previousTerritories.length + 1}.`
+        : `Saved territory ${previousTerritories.length + 1}.`,
+    );
+
+    if (trigger === 'auto') {
+      setHasAutoSavedCurrentRoute(true);
+      showAutoSaveSuccessBanner();
       stopTracking('auto_save');
-      setLastSaveStatus('Territory saved. Tracking stopped automatically.');
     }
-  }
+  }, [
+    captureCoveragePercentLabel,
+    claimValidationResult,
+    savedTerritories,
+    showAutoSaveSuccessBanner,
+    stopTracking,
+    territoryPreviewPayload,
+    territoryPreviewSignature,
+  ]);
+
+  useEffect(() => {
+    if (hasAutoSavedCurrentRoute) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      setLastSaveStatus('Auto-save skipped: already saved this route');
+      return;
+    }
+
+    if (!territoryPreviewPayload || !territoryPreviewSignature) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    if (claimValidationResult.isCaptureAllowed) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      setLastSaveStatus('Capture available: confirmation required.');
+      return;
+    }
+
+    if (!claimValidationResult.isClaimAllowed) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      setLastSaveStatus(`Claim blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`);
+      return;
+    }
+
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      saveTerritory('auto');
+      autoSaveTimeoutRef.current = null;
+    }, 2000);
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+    };
+  }, [claimValidationResult, hasAutoSavedCurrentRoute, saveTerritory, territoryPreviewPayload, territoryPreviewSignature]);
 
   if (!MAPBOX_ACCESS_TOKEN) {
     return (
@@ -830,6 +844,12 @@ export function MapScreen() {
         message={captureStatusMessage ?? ''}
         tone={captureStatusTone}
         visible={captureStatusMessage !== null}
+      />
+      <CaptureStatusBanner
+        label="Kayit Basarili"
+        message={autoSaveSuccessMessage ?? ''}
+        tone="success"
+        visible={autoSaveSuccessMessage !== null}
       />
       <CaptureConfirmationCard
         coveragePercentLabel={captureCoveragePercentLabel}

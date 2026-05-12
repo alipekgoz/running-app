@@ -8,6 +8,7 @@ type DebugOverlayProps = {
   expanded: boolean;
   onClearSavedTerritories: () => void;
   onFetchOnlineTerritories: () => void;
+  onResetIdentity: () => void;
   onToggle: () => void;
 };
 
@@ -16,6 +17,7 @@ function DebugOverlayComponent({
   expanded,
   onClearSavedTerritories,
   onFetchOnlineTerritories,
+  onResetIdentity,
   onToggle,
 }: DebugOverlayProps) {
   return (
@@ -25,7 +27,12 @@ function DebugOverlayComponent({
         <Text style={styles.toggle}>{expanded ? 'Hide' : 'Show'}</Text>
       </Pressable>
       {expanded ? (
-        <ScrollView showsVerticalScrollIndicator={false} style={styles.scrollView}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+          style={styles.scrollView}
+        >
           <View style={styles.content}>
             {debugLines.map((line) => (
               <Text key={line} style={styles.line}>
@@ -43,6 +50,9 @@ function DebugOverlayComponent({
               style={({ pressed }) => [styles.actionButton, pressed ? styles.pressed : null]}
             >
               <Text style={styles.actionLabel}>Clear Saved Territories</Text>
+            </Pressable>
+            <Pressable onPress={onResetIdentity} style={({ pressed }) => [styles.actionButton, pressed ? styles.pressed : null]}>
+              <Text style={styles.actionLabel}>Reset Player Identity</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -95,6 +105,9 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     maxHeight: uiHud.debugMaxHeight,
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
   title: {
     color: uiColors.primaryText,

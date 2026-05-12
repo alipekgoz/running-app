@@ -1,5 +1,5 @@
 import { StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { uiHud, uiSpacing } from '../../config/uiConfig';
 import type { ConflictSeverity } from '../../types';
@@ -40,11 +40,21 @@ type GameHUDProps = {
 };
 
 function GameHUDComponent(props: GameHUDProps) {
+  const insets = useSafeAreaInsets();
   const trackingStateLabel: 'Idle' | 'Tracking' = props.trackingActive ? 'Tracking' : 'Idle';
 
   return (
     <SafeAreaView edges={['top', 'bottom']} pointerEvents="box-none" style={styles.safeArea}>
-      <View pointerEvents="box-none" style={styles.container}>
+      <View
+        pointerEvents="box-none"
+        style={[
+          styles.container,
+          {
+            paddingBottom: Math.max(insets.bottom, uiSpacing.sm),
+            paddingTop: Math.max(insets.top, uiHud.topInsetPadding),
+          },
+        ]}
+      >
         <TopStatusBar
           backendConfigured={props.backendConfigured}
           gpsReady={props.gpsReady}
@@ -64,7 +74,6 @@ function GameHUDComponent(props: GameHUDProps) {
             trackingStateLabel={trackingStateLabel}
           />
           <PlayerIdentityCard
-            onResetIdentity={props.onResetIdentity}
             playerCreatedAt={props.playerCreatedAt}
             playerIdShort={props.playerIdShort}
             playerLoaded={props.playerLoaded}
@@ -77,6 +86,7 @@ function GameHUDComponent(props: GameHUDProps) {
             expanded={props.debugOpen}
             onClearSavedTerritories={props.onClearTerritories}
             onFetchOnlineTerritories={props.onFetchOnlineTerritories}
+            onResetIdentity={props.onResetIdentity}
             onToggle={props.onToggleDebug}
           />
           <TrackingControls
@@ -96,15 +106,15 @@ function GameHUDComponent(props: GameHUDProps) {
 
 const styles = StyleSheet.create({
   bottomCluster: {
+    alignSelf: 'stretch',
+    flexShrink: 0,
     gap: uiSpacing.sm,
     marginTop: 'auto',
-    paddingBottom: uiHud.topInsetPadding,
   },
   container: {
     flex: 1,
     gap: uiSpacing.md,
     paddingHorizontal: uiSpacing.md,
-    paddingTop: uiHud.topInsetPadding,
   },
   middleCluster: {
     alignItems: 'flex-start',

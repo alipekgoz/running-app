@@ -1,10 +1,9 @@
 import { memo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../../config/uiConfig';
 
 type PlayerIdentityCardProps = {
-  onResetIdentity: () => void;
   playerCreatedAt: string;
   playerIdShort: string;
   playerLoaded: boolean;
@@ -12,7 +11,6 @@ type PlayerIdentityCardProps = {
 };
 
 function PlayerIdentityCardComponent({
-  onResetIdentity,
   playerCreatedAt,
   playerIdShort,
   playerLoaded,
@@ -27,32 +25,11 @@ function PlayerIdentityCardComponent({
       <Text numberOfLines={1} style={styles.meta}>
         Created: {playerCreatedAt}
       </Text>
-      <Pressable onPress={onResetIdentity} style={({ pressed }) => [styles.button, pressed ? styles.buttonPressed : null]}>
-        <Text style={styles.buttonText}>Reset ID</Text>
-      </Pressable>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  button: {
-    alignItems: 'center',
-    borderColor: 'rgba(255,255,255,0.14)',
-    borderRadius: uiRadius.sm,
-    borderWidth: 1,
-    marginTop: uiSpacing.md,
-    paddingHorizontal: uiSpacing.md,
-    paddingVertical: uiSpacing.sm,
-  },
-  buttonPressed: {
-    opacity: 0.82,
-  },
-  buttonText: {
-    color: uiColors.primaryText,
-    fontSize: uiTypography.label,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
   card: {
     backgroundColor: uiColors.cardOverlay,
     borderColor: uiColors.cardBorder,
