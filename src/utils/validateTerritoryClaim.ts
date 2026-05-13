@@ -30,7 +30,7 @@ function getEstimatedEnemyCoveragePercent(
   let highestEnemyCoverageRatio = 0;
 
   for (const territory of onlineTerritories) {
-    if (territory.isMine === true) {
+    if (territory.isMine === true || territory.deviceId == null) {
       continue;
     }
 
@@ -50,8 +50,10 @@ export function validateTerritoryClaim(
   const validPreviewPolygon = filterValidCoordinates(previewPolygon);
   const overlapPercent = clampPercent(overlapAnalysis.estimatedOverlapPercent);
   const estimatedEnemyCoveragePercent = getEstimatedEnemyCoveragePercent(onlineTerritories, validPreviewPolygon);
-  const isCaptureCandidate = estimatedEnemyCoveragePercent >= CLAIM_RULE_CONFIG.captureCandidateThresholdPercent;
-  const isCaptureAllowed = isCaptureCandidate && conflictVisualizationState.overlapsOthers;
+  const hasEnemyOverlap = conflictVisualizationState.overlapsOthers;
+  const isCaptureCandidate =
+    hasEnemyOverlap && estimatedEnemyCoveragePercent >= CLAIM_RULE_CONFIG.captureCandidateThresholdPercent;
+  const isCaptureAllowed = isCaptureCandidate && hasEnemyOverlap;
 
   if (validPreviewPolygon.length < 3) {
     return {
@@ -61,27 +63,8 @@ export function validateTerritoryClaim(
       isClaimAllowed: false,
       overlapPercent,
       overlapsMine: conflictVisualizationState.overlapsMine,
-      overlapsOthers: conflictVisualizationState.overlapsOthers,
+      overlapsOthers: hasEnemyOverlap,
       rejectReason: 'invalid_polygon',
-    };
-  }
-
-  const hasRejectingEnemyOverlap =
-    overlapPercent >= CLAIM_RULE_CONFIG.rejectOverlapThresholdPercent && conflictVisualizationState.overlapsOthers;
-
-  if (hasRejectingEnemyOverlap) {
-    return {
-      estimatedEnemyCoveragePercent,
-      isCaptureCandidate,
-      isCaptureAllowed,
-      isClaimAllowed: false,
-      overlapPercent,
-      overlapsMine: conflictVisualizationState.overlapsMine,
-      overlapsOthers: conflictVisualizationState.overlapsOthers,
-      rejectReason:
-        conflictVisualizationState.severity === 'high'
-          ? 'high_conflict'
-          : 'enemy_overlap',
     };
   }
 
@@ -92,7 +75,7 @@ export function validateTerritoryClaim(
     isClaimAllowed: true,
     overlapPercent,
     overlapsMine: conflictVisualizationState.overlapsMine,
-    overlapsOthers: conflictVisualizationState.overlapsOthers,
+    overlapsOthers: hasEnemyOverlap,
     rejectReason: 'none',
   };
 }

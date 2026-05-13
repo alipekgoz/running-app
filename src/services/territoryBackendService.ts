@@ -19,6 +19,14 @@ type CaptureTransferResult = {
   territoryCaptureResult: TerritoryCaptureResult;
 };
 
+export type CarvedTerritoryUpdate = {
+  areaHectare: number;
+  areaM2: number;
+  coordinates: Coordinates[];
+  id: string;
+  sourceRoutePointCount: number;
+};
+
 type TerritoryRow = {
   area_hectare?: unknown;
   area_m2?: unknown;
@@ -236,6 +244,7 @@ export async function uploadTerritories(
 
 export async function transferTerritoryOwnership(
   capturedTerritoryIds: readonly string[],
+  carvedTerritories: readonly CarvedTerritoryUpdate[],
   newTerritory: LocalSavedTerritory,
   playerId?: string | null,
 ): Promise<CaptureTransferResult> {
@@ -249,6 +258,7 @@ export async function transferTerritoryOwnership(
       territoryCaptureResult: {
         captureReason: 'capture_failed',
         captureTimestamp,
+        carvedTerritoryIds: carvedTerritories.map((territory) => territory.id),
         capturedTerritoryIds: [...capturedTerritoryIds],
         didCapture: false,
         previousOwnerIds: [],
@@ -256,13 +266,14 @@ export async function transferTerritoryOwnership(
     };
   }
 
-  if (capturedTerritoryIds.length === 0) {
+  if (capturedTerritoryIds.length === 0 && carvedTerritories.length === 0) {
     return {
-      message: 'No capture targets were found.',
+      message: 'No territory interaction targets were found.',
       success: false,
       territoryCaptureResult: {
         captureReason: 'capture_failed',
         captureTimestamp,
+        carvedTerritoryIds: [],
         capturedTerritoryIds: [],
         didCapture: false,
         previousOwnerIds: [],
@@ -271,20 +282,50 @@ export async function transferTerritoryOwnership(
   }
 
   try {
-    const { error: deleteError } = await supabase.from('territories').delete().in('id', [...capturedTerritoryIds]);
+    if (capturedTerritoryIds.length > 0) {
+      const { error: deleteError } = await supabase.from('territories').delete().in('id', [...capturedTerritoryIds]);
 
-    if (deleteError) {
-      return {
-        message: deleteError.message,
-        success: false,
-        territoryCaptureResult: {
-          captureReason: 'capture_failed',
-          captureTimestamp,
-          capturedTerritoryIds: [...capturedTerritoryIds],
-          didCapture: false,
-          previousOwnerIds: [],
-        },
-      };
+      if (deleteError) {
+        return {
+          message: deleteError.message,
+          success: false,
+          territoryCaptureResult: {
+            captureReason: 'capture_failed',
+            captureTimestamp,
+            carvedTerritoryIds: carvedTerritories.map((territory) => territory.id),
+            capturedTerritoryIds: [...capturedTerritoryIds],
+            didCapture: false,
+            previousOwnerIds: [],
+          },
+        };
+      }
+    }
+
+    for (const carvedTerritory of carvedTerritories) {
+      const { error: updateError } = await supabase
+        .from('territories')
+        .update({
+          area_hectare: carvedTerritory.areaHectare,
+          area_m2: carvedTerritory.areaM2,
+          coordinates: carvedTerritory.coordinates,
+          source_route_point_count: carvedTerritory.sourceRoutePointCount,
+        })
+        .eq('id', carvedTerritory.id);
+
+      if (updateError) {
+        return {
+          message: updateError.message,
+          success: false,
+          territoryCaptureResult: {
+            captureReason: 'capture_failed',
+            captureTimestamp,
+            carvedTerritoryIds: carvedTerritories.map((territory) => territory.id),
+            capturedTerritoryIds: [...capturedTerritoryIds],
+            didCapture: false,
+            previousOwnerIds: [],
+          },
+        };
+      }
     }
 
     const { error: insertError } = await supabase.from('territories').insert(toTerritoryInsertPayload(newTerritory, playerId));
@@ -296,6 +337,7 @@ export async function transferTerritoryOwnership(
         territoryCaptureResult: {
           captureReason: 'capture_failed',
           captureTimestamp,
+          carvedTerritoryIds: carvedTerritories.map((territory) => territory.id),
           capturedTerritoryIds: [...capturedTerritoryIds],
           didCapture: false,
           previousOwnerIds: [],
@@ -303,14 +345,25 @@ export async function transferTerritoryOwnership(
       };
     }
 
+    const captureReason: TerritoryCaptureResult['captureReason'] =
+      capturedTerritoryIds.length > 0
+        ? 'enemy_territory_captured'
+        : carvedTerritories.length > 0
+          ? 'enemy_territory_reduced'
+          : 'territory_claimed';
+
     return {
-      message: `Captured ${capturedTerritoryIds.length} territory slot${capturedTerritoryIds.length === 1 ? '' : 's'}.`,
+      message:
+        capturedTerritoryIds.length > 0
+          ? `Captured ${capturedTerritoryIds.length} territory slot${capturedTerritoryIds.length === 1 ? '' : 's'}.`
+          : `Reduced ${carvedTerritories.length} enemy territory slot${carvedTerritories.length === 1 ? '' : 's'}.`,
       success: true,
       territoryCaptureResult: {
-        captureReason: 'enemy_territory_captured',
+        captureReason,
         captureTimestamp,
+        carvedTerritoryIds: carvedTerritories.map((territory) => territory.id),
         capturedTerritoryIds: [...capturedTerritoryIds],
-        didCapture: true,
+        didCapture: capturedTerritoryIds.length > 0,
         newTerritoryId: newTerritory.id,
         previousOwnerIds: [],
       },
@@ -324,6 +377,7 @@ export async function transferTerritoryOwnership(
       territoryCaptureResult: {
         captureReason: 'capture_failed',
         captureTimestamp,
+        carvedTerritoryIds: carvedTerritories.map((territory) => territory.id),
         capturedTerritoryIds: [...capturedTerritoryIds],
         didCapture: false,
         previousOwnerIds: [],

@@ -13,6 +13,9 @@ type GameHUDProps = {
   areaHectareLabel: string;
   areaM2Label: string;
   backendConfigured: boolean;
+  canFetchOnlineTerritories: boolean;
+  canStartTracking: boolean;
+  canStopTracking: boolean;
   canSaveTerritory: boolean;
   canSync: boolean;
   claimLabel: string;
@@ -84,12 +87,15 @@ function GameHUDComponent(props: GameHUDProps) {
           <DebugOverlay
             debugLines={props.debugLines}
             expanded={props.debugOpen}
+            fetchOnlineDisabled={!props.canFetchOnlineTerritories}
             onClearSavedTerritories={props.onClearTerritories}
             onFetchOnlineTerritories={props.onFetchOnlineTerritories}
             onResetIdentity={props.onResetIdentity}
             onToggle={props.onToggleDebug}
           />
           <TrackingControls
+            canStartTracking={props.canStartTracking}
+            canStopTracking={props.canStopTracking}
             canSaveTerritory={props.canSaveTerritory}
             canSync={props.canSync}
             isTracking={props.trackingActive}

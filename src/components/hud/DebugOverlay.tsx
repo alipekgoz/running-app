@@ -6,6 +6,7 @@ import { uiColors, uiHud, uiRadius, uiSpacing, uiTypography } from '../../config
 type DebugOverlayProps = {
   debugLines: readonly string[];
   expanded: boolean;
+  fetchOnlineDisabled: boolean;
   onClearSavedTerritories: () => void;
   onFetchOnlineTerritories: () => void;
   onResetIdentity: () => void;
@@ -15,6 +16,7 @@ type DebugOverlayProps = {
 function DebugOverlayComponent({
   debugLines,
   expanded,
+  fetchOnlineDisabled,
   onClearSavedTerritories,
   onFetchOnlineTerritories,
   onResetIdentity,
@@ -40,8 +42,13 @@ function DebugOverlayComponent({
               </Text>
             ))}
             <Pressable
+              disabled={fetchOnlineDisabled}
               onPress={onFetchOnlineTerritories}
-              style={({ pressed }) => [styles.actionButton, pressed ? styles.pressed : null]}
+              style={({ pressed }) => [
+                styles.actionButton,
+                fetchOnlineDisabled ? styles.disabledButton : null,
+                pressed && !fetchOnlineDisabled ? styles.pressed : null,
+              ]}
             >
               <Text style={styles.actionLabel}>Fetch Online Territories</Text>
             </Pressable>
@@ -83,6 +90,9 @@ const styles = StyleSheet.create({
     color: uiColors.primaryText,
     fontSize: uiTypography.label,
     fontWeight: '700',
+  },
+  disabledButton: {
+    opacity: 0.4,
   },
   content: {
     paddingBottom: uiSpacing.md,

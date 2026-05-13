@@ -6,13 +6,24 @@ import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View
 import { CaptureConfirmationCard } from '../components/hud/CaptureConfirmationCard';
 import { CaptureStatusBanner } from '../components/hud/CaptureStatusBanner';
 import { GameHUD } from '../components/hud/GameHUD';
+import { COOLDOWN_CONFIG } from '../config/cooldownConfig';
 import { OnlineTerritoriesLayer } from '../components/map/OnlineTerritoriesLayer';
 import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
 import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../config/uiConfig';
-import type { Coordinates, GpsPoint, LocalSavedTerritory, OnlineTerritory, OverlapComparableTerritory, PlayerProfile } from '../types';
+import type {
+  CooldownReason,
+  CooldownState,
+  Coordinates,
+  GpsPoint,
+  LocalSavedTerritory,
+  OnlineTerritory,
+  OverlapComparableTerritory,
+  PlayerProfile,
+  TerritoryPreviewPayload,
+} from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
   clearPlayerIdentity,
@@ -40,6 +51,7 @@ import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
 import { createId } from '../utils/createId';
 import { executeTerritoryCapture } from '../utils/executeTerritoryCapture';
+import { checkCooldown } from '../utils/checkCooldown';
 import { routeToGeoJSON } from '../utils/routeToGeoJSON';
 import { validateTerritoryClaim } from '../utils/validateTerritoryClaim';
 
@@ -47,8 +59,27 @@ if (MAPBOX_ACCESS_TOKEN) {
   void Mapbox.setAccessToken(MAPBOX_ACCESS_TOKEN);
 }
 
+type SaveResult = {
+  reason: 'saved' | 'captured' | 'duplicate' | 'cooldown' | 'invalid' | 'failed';
+  saved: boolean;
+  shouldAutoStop: boolean;
+};
+
+type AutoSaveBlockedReason =
+  | 'none'
+  | 'tracking_inactive'
+  | 'preview_missing'
+  | 'preview_not_rendered'
+  | 'area_invalid'
+  | 'already_auto_saved'
+  | 'capture_prompt_visible'
+  | 'capture_processing'
+  | 'claim_not_allowed'
+  | 'claim_cooldown_active';
+
 export function MapScreen() {
   const autoSaveSuccessBannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cooldownTickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [currentLocation, setCurrentLocation] = useState<Coordinates | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isLocationServicesEnabled, setIsLocationServicesEnabled] = useState(true);
@@ -63,7 +94,14 @@ export function MapScreen() {
   const [lastSaveStatus, setLastSaveStatus] = useState('No save yet.');
   const [lastSyncStatus, setLastSyncStatus] = useState('No sync yet.');
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
+  const [lastCooldownBlockReason, setLastCooldownBlockReason] = useState<CooldownReason>('none');
+  const [lastCarveApplied, setLastCarveApplied] = useState(false);
+  const [lastFullCaptureApplied, setLastFullCaptureApplied] = useState(false);
+  const [lastCarvedTerritoryIds, setLastCarvedTerritoryIds] = useState<string[]>([]);
+  const [lastResultingGeometryValid, setLastResultingGeometryValid] = useState(true);
   const [hasAutoSavedCurrentRoute, setHasAutoSavedCurrentRoute] = useState(false);
+  const [hasCapturedCurrentRoute, setHasCapturedCurrentRoute] = useState(false);
+  const [isAutoSaveTimerActive, setIsAutoSaveTimerActive] = useState(false);
   const [currentPlayerProfile, setCurrentPlayerProfile] = useState<PlayerProfile | null>(null);
   const [isPlayerLoaded, setIsPlayerLoaded] = useState(false);
   const [isPlayerStorageValid, setIsPlayerStorageValid] = useState(true);
@@ -73,12 +111,18 @@ export function MapScreen() {
   const [onlineTerritoriesError, setOnlineTerritoriesError] = useState<string | null>(null);
   const [lastFetchStatus, setLastFetchStatus] = useState('No online fetch yet.');
   const [capturePromptVisible, setCapturePromptVisible] = useState(false);
+  const [captureStatusLabel, setCaptureStatusLabel] = useState<string | undefined>(undefined);
   const [captureStatusMessage, setCaptureStatusMessage] = useState<string | null>(null);
   const [captureStatusTone, setCaptureStatusTone] = useState<'available' | 'failed' | 'success'>('available');
   const [isCaptureProcessing, setIsCaptureProcessing] = useState(false);
   const [autoSaveSuccessMessage, setAutoSaveSuccessMessage] = useState<string | null>(null);
+  const [lastSaveResultReason, setLastSaveResultReason] = useState<SaveResult['reason'] | null>(null);
+  const [lastSaveResultShouldAutoStop, setLastSaveResultShouldAutoStop] = useState<boolean | null>(null);
+  const [cooldownState, setCooldownState] = useState<CooldownState>({});
+  const [cooldownNowMs, setCooldownNowMs] = useState(() => Date.now());
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTerritoryRef = useRef<((trigger?: 'auto' | 'manual') => Promise<SaveResult>) | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
   const isRouteLineRendered = routeGeoJSON !== null;
   const polygonAnalysis = useMemo(() => analyzePolygonCandidate(routePoints), [routePoints]);
@@ -113,7 +157,22 @@ export function MapScreen() {
   );
   const supabaseConfigStatus = useMemo(() => getSupabaseConfigStatus(), []);
   const backendConfigured = isBackendConfigured();
-  const isSyncEnabled = backendConfigured && savedTerritories.length > 0;
+  const claimCooldown = useMemo(
+    () => checkCooldown('claim', cooldownState, cooldownNowMs),
+    [cooldownNowMs, cooldownState],
+  );
+  const captureCooldown = useMemo(
+    () => checkCooldown('capture', cooldownState, cooldownNowMs),
+    [cooldownNowMs, cooldownState],
+  );
+  const startStopCooldown = useMemo(
+    () => checkCooldown('start_stop', cooldownState, cooldownNowMs),
+    [cooldownNowMs, cooldownState],
+  );
+  const syncCooldown = useMemo(
+    () => checkCooldown('sync', cooldownState, cooldownNowMs),
+    [cooldownNowMs, cooldownState],
+  );
   const onlineTerritoriesWithOwnership = useMemo(
     () =>
       onlineTerritories.map((territory) => ({
@@ -125,9 +184,42 @@ export function MapScreen() {
       })),
     [currentPlayerProfile?.playerId, onlineTerritories],
   );
-  const overlapComparableTerritories = useMemo(
-    () => buildOverlapComparableTerritories(onlineTerritoriesWithOwnership, savedTerritories),
+  const enemyOnlineTerritories = useMemo(
+    () =>
+      onlineTerritoriesWithOwnership.filter(
+        (territory) =>
+          territory.deviceId != null &&
+          currentPlayerProfile?.playerId != null &&
+          territory.deviceId !== currentPlayerProfile.playerId,
+      ),
+    [currentPlayerProfile?.playerId, onlineTerritoriesWithOwnership],
+  );
+  const unsyncedSavedTerritories = useMemo(
+    () => getUnsyncedSavedTerritories(savedTerritories, onlineTerritoriesWithOwnership),
     [onlineTerritoriesWithOwnership, savedTerritories],
+  );
+  const displayOnlineTerritories = useMemo(
+    () => getDisplayOnlineTerritories(onlineTerritoriesWithOwnership, savedTerritories),
+    [onlineTerritoriesWithOwnership, savedTerritories],
+  );
+  const isSyncEnabled = backendConfigured && unsyncedSavedTerritories.length > 0 && syncCooldown.allowed;
+  const canFetchOnlineTerritories = backendConfigured && syncCooldown.allowed && !onlineTerritoriesLoading;
+  const canStartTracking = !isTracking && startStopCooldown.allowed;
+  const canStopTracking = isTracking && startStopCooldown.allowed;
+  const overlapComparableOnlineTerritories = useMemo(
+    () =>
+      onlineTerritoriesWithOwnership.filter(
+        (territory) =>
+          territory.isMine === true ||
+          (territory.deviceId != null &&
+            currentPlayerProfile?.playerId != null &&
+            territory.deviceId !== currentPlayerProfile.playerId),
+      ),
+    [currentPlayerProfile?.playerId, onlineTerritoriesWithOwnership],
+  );
+  const overlapComparableTerritories = useMemo(
+    () => buildOverlapComparableTerritories(overlapComparableOnlineTerritories, savedTerritories),
+    [overlapComparableOnlineTerritories, savedTerritories],
   );
   const territoryOverlapAnalysis = useMemo(
     () => analyzeTerritoryOverlap(territoryPreviewPayload?.coordinates ?? [], overlapComparableTerritories),
@@ -146,12 +238,12 @@ export function MapScreen() {
       validateTerritoryClaim(
         territoryOverlapAnalysis,
         conflictVisualizationState,
-        onlineTerritoriesWithOwnership,
+        enemyOnlineTerritories,
         territoryPreviewPayload?.coordinates ?? [],
       ),
     [
       conflictVisualizationState,
-      onlineTerritoriesWithOwnership,
+      enemyOnlineTerritories,
       territoryOverlapAnalysis,
       territoryPreviewPayload?.coordinates,
     ],
@@ -175,6 +267,78 @@ export function MapScreen() {
     () => `${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
     [claimValidationResult.estimatedEnemyCoveragePercent],
   );
+  const capturePromptSignature = useMemo(() => {
+    if (!territoryPreviewPayload || !claimValidationResult.isCaptureAllowed) {
+      return null;
+    }
+
+    const overlappingTerritoryIds = [...territoryOverlapAnalysis.overlappingTerritoryIds].sort();
+    const roundedCoveragePercent = Math.round(claimValidationResult.estimatedEnemyCoveragePercent);
+
+    if (overlappingTerritoryIds.length === 0) {
+      return `capture:${roundedCoveragePercent}:${territoryPreviewPayload.sourceRoutePointCount}`;
+    }
+
+    return `capture:${overlappingTerritoryIds.join(',')}:${roundedCoveragePercent}`;
+  }, [
+    claimValidationResult.estimatedEnemyCoveragePercent,
+    claimValidationResult.isCaptureAllowed,
+    territoryOverlapAnalysis.overlappingTerritoryIds,
+    territoryPreviewPayload,
+  ]);
+  const [lastCapturePromptSignature, setLastCapturePromptSignature] = useState<string | null>(null);
+  const autoSaveBlockedReason = useMemo<AutoSaveBlockedReason>(() => {
+    if (!isTracking) {
+      return 'tracking_inactive';
+    }
+
+    if (!territoryPreviewPayload || !territoryPreviewSignature) {
+      return 'preview_missing';
+    }
+
+    if (!polygonPreviewAnalysis.isRendered) {
+      return 'preview_not_rendered';
+    }
+
+    if (!polygonAreaAnalysis.isValid) {
+      return 'area_invalid';
+    }
+
+    if (hasAutoSavedCurrentRoute) {
+      return 'already_auto_saved';
+    }
+
+    if (capturePromptVisible) {
+      return 'capture_prompt_visible';
+    }
+
+    if (isCaptureProcessing) {
+      return 'capture_processing';
+    }
+
+    if (!claimValidationResult.isClaimAllowed) {
+      return 'claim_not_allowed';
+    }
+
+    if (!claimCooldown.allowed && !claimValidationResult.isCaptureAllowed) {
+      return 'claim_cooldown_active';
+    }
+
+    return 'none';
+  }, [
+    capturePromptVisible,
+    claimCooldown.allowed,
+    claimValidationResult.isCaptureAllowed,
+    claimValidationResult.isClaimAllowed,
+    hasAutoSavedCurrentRoute,
+    isCaptureProcessing,
+    isTracking,
+    polygonAreaAnalysis.isValid,
+    polygonPreviewAnalysis.isRendered,
+    territoryPreviewPayload,
+    territoryPreviewSignature,
+  ]);
+  const autoSaveEligible = autoSaveBlockedReason === 'none';
   const debugLines = useMemo(
     () => [
       `Location: ${locationDebugText}`,
@@ -193,6 +357,9 @@ export function MapScreen() {
       `Fill point count: ${polygonPreviewAnalysis.geoJSON?.properties.pointCount ?? 0}`,
       `Saved territory count: ${savedTerritories.length}`,
       `Online territory count: ${onlineTerritoriesWithOwnership.length}`,
+      `Enemy online territory count: ${enemyOnlineTerritories.length}`,
+      `Displayed online territory count: ${displayOnlineTerritories.length}`,
+      `Unsynced saved territory count: ${unsyncedSavedTerritories.length}`,
       `Overlap detected: ${territoryOverlapAnalysis.hasOverlap ? 'Yes' : 'No'}`,
       `Overlap count: ${territoryOverlapAnalysis.overlapCount}`,
       `Overlapping mine count: ${territoryOverlapAnalysis.overlappingMineCount}`,
@@ -208,10 +375,29 @@ export function MapScreen() {
       `Claim reject reason: ${claimValidationResult.rejectReason}`,
       `Capture candidate: ${claimValidationResult.isCaptureCandidate ? 'Yes' : 'No'}`,
       `Capture allowed: ${claimValidationResult.isCaptureAllowed ? 'Yes' : 'No'}`,
+      `Estimated enemy coverage percent: ${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
       `Capture prompt visible: ${capturePromptVisible ? 'Yes' : 'No'}`,
+      `Capture prompt signature: ${capturePromptSignature ?? 'None'}`,
+      `Last shown capture prompt signature: ${lastCapturePromptSignature ?? 'None'}`,
+      `Has captured current route: ${hasCapturedCurrentRoute ? 'Yes' : 'No'}`,
       `Capture processing: ${isCaptureProcessing ? 'Yes' : 'No'}`,
+      `Auto-save eligible: ${autoSaveEligible ? 'Yes' : 'No'}`,
+      `Auto-save blocked reason: ${autoSaveBlockedReason}`,
+      `Auto-save timer active: ${isAutoSaveTimerActive ? 'Yes' : 'No'}`,
+      `Has auto-saved current route: ${hasAutoSavedCurrentRoute ? 'Yes' : 'No'}`,
+      `Tracking active: ${isTracking ? 'Yes' : 'No'}`,
+      `Preview payload exists: ${territoryPreviewPayload ? 'Yes' : 'No'}`,
       `Capture telemetry enemy coverage: ${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
+      `Carve applied: ${lastCarveApplied ? 'Yes' : 'No'}`,
+      `Full capture applied: ${lastFullCaptureApplied ? 'Yes' : 'No'}`,
+      `Carved territory ids: ${lastCarvedTerritoryIds.length > 0 ? lastCarvedTerritoryIds.join(', ') : 'None'}`,
+      `Resulting geometry valid: ${lastResultingGeometryValid ? 'Yes' : 'No'}`,
       `Claim overlap percent: ${claimValidationResult.overlapPercent.toFixed(1)}%`,
+      `Claim cooldown remaining: ${formatCooldownRemaining(claimCooldown.remainingMs)}`,
+      `Capture cooldown remaining: ${formatCooldownRemaining(captureCooldown.remainingMs)}`,
+      `Start/stop cooldown remaining: ${formatCooldownRemaining(startStopCooldown.remainingMs)}`,
+      `Sync cooldown remaining: ${formatCooldownRemaining(syncCooldown.remainingMs)}`,
+      `Last cooldown block reason: ${lastCooldownBlockReason}`,
       `Online fetch loading: ${onlineTerritoriesLoading ? 'Yes' : 'No'}`,
       `Last fetch status: ${lastFetchStatus}`,
       `Fetch error: ${onlineTerritoriesError ?? 'None'}`,
@@ -231,6 +417,8 @@ export function MapScreen() {
       `Last saved area m2: ${formatAreaSquareMeters(lastSavedTerritory?.areaM2 ?? null)}`,
       `Save button enabled: ${isSaveTerritoryEnabled ? 'Yes' : 'No'}`,
       `Last save status: ${lastSaveStatus}`,
+      `Last save result reason: ${lastSaveResultReason ?? 'None'}`,
+      `Last save result should auto-stop: ${lastSaveResultShouldAutoStop == null ? 'None' : lastSaveResultShouldAutoStop ? 'Yes' : 'No'}`,
       `Last coordinate: ${formatCoordinateLabel(lastRoutePoint, currentLocation)}`,
       `Last rejected reason: ${lastRejectedReason ?? 'None'}`,
     ],
@@ -238,23 +426,45 @@ export function MapScreen() {
       currentLocation,
       currentPlayerProfile,
       backendConfigured,
+      capturePromptSignature,
       isPlayerLoaded,
       isPlayerStorageValid,
       isCaptureProcessing,
+      isTracking,
       isRouteLineRendered,
       isSaveTerritoryEnabled,
       isSyncEnabled,
+      autoSaveBlockedReason,
+      autoSaveEligible,
+      isAutoSaveTimerActive,
+      canFetchOnlineTerritories,
       capturePromptVisible,
+      captureCooldown.remainingMs,
+      claimCooldown.remainingMs,
+      cooldownState,
+      cooldownNowMs,
+      lastCooldownBlockReason,
       lastFetchStatus,
       lastRejectedReason,
       lastRoutePoint,
       lastSaveStatus,
+      lastSaveResultReason,
+      lastSaveResultShouldAutoStop,
       lastSavedTerritory?.areaM2,
       lastSyncStatus,
       locationDebugText,
       onlineTerritoriesError,
       onlineTerritoriesLoading,
+      displayOnlineTerritories.length,
+      enemyOnlineTerritories.length,
       onlineTerritoriesWithOwnership.length,
+      lastCarveApplied,
+      lastCarvedTerritoryIds,
+      lastCapturePromptSignature,
+      lastFullCaptureApplied,
+      lastResultingGeometryValid,
+      hasAutoSavedCurrentRoute,
+      hasCapturedCurrentRoute,
       playerIdentityStatus,
       playerIdShort,
       claimValidationResult,
@@ -265,11 +475,24 @@ export function MapScreen() {
       routeGeoJSON,
       routePoints.length,
       savedTerritories.length,
+      startStopCooldown.remainingMs,
       supabaseConfigStatus.isConfigured,
+      syncCooldown.remainingMs,
       territoryOverlapAnalysis,
+      territoryPreviewPayload,
       territoriesStorageError,
+      unsyncedSavedTerritories.length,
     ],
   );
+
+  const clearAutoSaveTimer = useCallback((): void => {
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+      autoSaveTimeoutRef.current = null;
+    }
+
+    setIsAutoSaveTimerActive(false);
+  }, []);
 
   useEffect(() => {
     async function hydrateSavedTerritories(): Promise<void> {
@@ -397,6 +620,10 @@ export function MapScreen() {
     void hydrateOnlineTerritories();
     void loadCurrentLocation();
 
+    cooldownTickIntervalRef.current = setInterval(() => {
+      setCooldownNowMs(Date.now());
+    }, 1000);
+
     const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState !== 'active') {
         return;
@@ -407,27 +634,18 @@ export function MapScreen() {
 
     return () => {
       locationSubscriptionRef.current?.remove();
-      autoSaveTimeoutRef.current && clearTimeout(autoSaveTimeoutRef.current);
+      clearAutoSaveTimer();
       autoSaveSuccessBannerTimeoutRef.current && clearTimeout(autoSaveSuccessBannerTimeoutRef.current);
+      cooldownTickIntervalRef.current && clearInterval(cooldownTickIntervalRef.current);
       appStateSubscription.remove();
     };
-  }, []);
+  }, [clearAutoSaveTimer]);
 
   useEffect(() => {
-    if (!CLAIM_RULE_CONFIG.captureConfirmationEnabled) {
+    if (!CLAIM_RULE_CONFIG.captureConfirmationEnabled || hasAutoSavedCurrentRoute || hasCapturedCurrentRoute) {
       setCapturePromptVisible(false);
-      return;
     }
-
-    if (claimValidationResult.isCaptureAllowed && territoryPreviewPayload) {
-      setCapturePromptVisible(true);
-      setCaptureStatusTone('available');
-      setCaptureStatusMessage(`Enemy coverage ${captureCoveragePercentLabel}. Confirm to capture.`);
-      return;
-    }
-
-    setCapturePromptVisible(false);
-  }, [captureCoveragePercentLabel, claimValidationResult.isCaptureAllowed, territoryPreviewPayload]);
+  }, [hasAutoSavedCurrentRoute, hasCapturedCurrentRoute]);
 
   useEffect(() => {
     if (territoriesLoading) {
@@ -448,7 +666,15 @@ export function MapScreen() {
     void persistSavedTerritories();
   }, [savedTerritories, territoriesLoading]);
 
-  async function loadOnlineTerritories(): Promise<void> {
+  const updateCooldownTimestamp = useCallback((key: keyof CooldownState, timestamp = new Date().toISOString()): void => {
+    setCooldownState((previousState) => ({
+      ...previousState,
+      [key]: timestamp,
+    }));
+    setCooldownNowMs(Date.now());
+  }, []);
+
+  async function loadOnlineTerritories(trigger: 'manual' | 'system' = 'system'): Promise<void> {
     if (!backendConfigured) {
       setOnlineTerritories([]);
       setOnlineTerritoriesError(null);
@@ -456,9 +682,20 @@ export function MapScreen() {
       return;
     }
 
+    if (trigger === 'manual' && !syncCooldown.allowed) {
+      const cooldownMessage = `Sync cooldown active: ${formatCooldownSeconds(syncCooldown.remainingMs)}s remaining`;
+
+      setLastCooldownBlockReason(syncCooldown.reason);
+      setLastFetchStatus(cooldownMessage);
+      return;
+    }
+
     try {
       setOnlineTerritoriesLoading(true);
       setOnlineTerritoriesError(null);
+      if (trigger === 'manual') {
+        updateCooldownTimestamp('lastSyncAt');
+      }
       const result = await fetchTerritories();
 
       if (!result.success) {
@@ -470,6 +707,7 @@ export function MapScreen() {
 
       setOnlineTerritories(result.territories);
       setLastFetchStatus(result.message);
+      setLastCooldownBlockReason('none');
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown online fetch error';
 
@@ -482,12 +720,29 @@ export function MapScreen() {
   }
 
   async function startTracking(): Promise<void> {
+    if (!startStopCooldown.allowed) {
+      const cooldownMessage = `Start/stop cooldown active: ${formatCooldownSeconds(startStopCooldown.remainingMs)}s remaining`;
+
+      setLastCooldownBlockReason(startStopCooldown.reason);
+      setLocationDebugText(cooldownMessage);
+      return;
+    }
+
     try {
       setLocationError(null);
       setLastRejectedReason(null);
       setAutoSaveSuccessMessage(null);
+      setLastCarveApplied(false);
+      setLastFullCaptureApplied(false);
+      setLastCarvedTerritoryIds([]);
+      setLastResultingGeometryValid(true);
       setRoutePoints([]);
       setHasAutoSavedCurrentRoute(false);
+      setHasCapturedCurrentRoute(false);
+      setLastCapturePromptSignature(null);
+      setLastSaveResultReason(null);
+      setLastSaveResultShouldAutoStop(null);
+      setCapturePromptVisible(false);
       setLocationDebugText('Starting GPS tracking...');
 
       const permission = await Location.requestForegroundPermissionsAsync();
@@ -547,6 +802,8 @@ export function MapScreen() {
 
       locationSubscriptionRef.current = subscription;
       setIsTracking(true);
+      updateCooldownTimestamp('lastStartStopAt');
+      setLastCooldownBlockReason('none');
       setLocationDebugText('GPS tracking started.');
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown tracking error';
@@ -557,11 +814,8 @@ export function MapScreen() {
     }
   }
 
-  const stopTracking = useCallback((reason: 'auto_save' | 'manual' = 'manual'): void => {
-    if (autoSaveTimeoutRef.current) {
-      clearTimeout(autoSaveTimeoutRef.current);
-      autoSaveTimeoutRef.current = null;
-    }
+  const stopTrackingCore = useCallback((reason: 'auto_save' | 'manual', updateCooldown: boolean): void => {
+    clearAutoSaveTimer();
     locationSubscriptionRef.current?.remove();
     locationSubscriptionRef.current = null;
     setIsTracking(false);
@@ -570,14 +824,22 @@ export function MapScreen() {
         ? 'Tracking stopped automatically after territory save.'
         : 'GPS tracking stopped.',
     );
-  }, []);
+    if (updateCooldown) {
+      updateCooldownTimestamp('lastStartStopAt');
+      setLastCooldownBlockReason('none');
+    }
+  }, [clearAutoSaveTimer, updateCooldownTimestamp]);
 
-  const showAutoSaveSuccessBanner = useCallback((): void => {
+  const stopTracking = useCallback((reason: 'auto_save' | 'manual' = 'manual'): void => {
+    stopTrackingCore(reason, reason === 'manual');
+  }, [stopTrackingCore]);
+
+  const showAutoSaveSuccessBanner = useCallback((message = 'Bölgeniz kaydedildi'): void => {
     if (autoSaveSuccessBannerTimeoutRef.current) {
       clearTimeout(autoSaveSuccessBannerTimeoutRef.current);
     }
 
-    setAutoSaveSuccessMessage('Bölgeniz kaydedildi');
+    setAutoSaveSuccessMessage(message);
     autoSaveSuccessBannerTimeoutRef.current = setTimeout(() => {
       setAutoSaveSuccessMessage(null);
       autoSaveSuccessBannerTimeoutRef.current = null;
@@ -608,9 +870,19 @@ export function MapScreen() {
       return;
     }
 
-    const result = await uploadTerritories(savedTerritories, currentPlayerProfile?.playerId ?? null);
+    if (!syncCooldown.allowed) {
+      setLastCooldownBlockReason(syncCooldown.reason);
+      setLastSyncStatus(`Sync cooldown active: ${formatCooldownSeconds(syncCooldown.remainingMs)}s remaining`);
+      return;
+    }
+
+    updateCooldownTimestamp('lastSyncAt');
+    const result = await uploadTerritories(unsyncedSavedTerritories, currentPlayerProfile?.playerId ?? null);
 
     setLastSyncStatus(result.success ? result.message : `Sync failed: ${result.message}`);
+    if (result.success) {
+      setLastCooldownBlockReason('none');
+    }
   }
 
   async function resetPlayerIdentity(): Promise<void> {
@@ -632,12 +904,16 @@ export function MapScreen() {
 
   async function confirmTerritoryCapture(): Promise<void> {
     if (!territoryPreviewPayload) {
+      setLastSaveResultReason('invalid');
+      setLastSaveResultShouldAutoStop(false);
       setCaptureStatusTone('failed');
       setCaptureStatusMessage('Capture failed: preview is not ready.');
       return;
     }
 
     if (!claimValidationResult.isCaptureAllowed) {
+      setLastSaveResultReason('invalid');
+      setLastSaveResultShouldAutoStop(false);
       setCapturePromptVisible(false);
       setCaptureStatusTone('failed');
       setCaptureStatusMessage('Capture failed: territory is no longer eligible.');
@@ -645,19 +921,37 @@ export function MapScreen() {
     }
 
     if (!backendConfigured) {
+      setLastSaveResultReason('failed');
+      setLastSaveResultShouldAutoStop(false);
       setCaptureStatusTone('failed');
       setCaptureStatusMessage('Capture failed: backend is not configured.');
       return;
     }
 
+    if (!captureCooldown.allowed) {
+      setLastSaveResultReason('cooldown');
+      setLastSaveResultShouldAutoStop(false);
+      const cooldownMessage = `Capture cooldown active: ${formatCooldownSeconds(captureCooldown.remainingMs)}s remaining`;
+
+      setLastCooldownBlockReason(captureCooldown.reason);
+      setCaptureStatusTone('failed');
+      setCaptureStatusLabel(undefined);
+      setCaptureStatusMessage(cooldownMessage);
+      setLastSaveStatus(cooldownMessage);
+      return;
+    }
+
     const captureOperation = executeTerritoryCapture(
       territoryPreviewPayload,
-      onlineTerritoriesWithOwnership,
+      enemyOnlineTerritories,
       claimValidationResult,
     );
 
     if (!captureOperation.result.didCapture) {
+      setLastSaveResultReason('failed');
+      setLastSaveResultShouldAutoStop(false);
       setCapturePromptVisible(false);
+      setCaptureStatusLabel(undefined);
       setCaptureStatusTone('failed');
       setCaptureStatusMessage('Capture failed: no enemy territory met the threshold.');
       return;
@@ -666,12 +960,16 @@ export function MapScreen() {
     try {
       setIsCaptureProcessing(true);
       const backendResult = await transferTerritoryOwnership(
-        captureOperation.capturedTerritoryIds,
+        captureOperation.result.capturedTerritoryIds,
+        captureOperation.carvedTerritories,
         captureOperation.newLocalTerritory,
         currentPlayerProfile?.playerId ?? null,
       );
 
       if (!backendResult.success) {
+        setLastSaveResultReason('failed');
+        setLastSaveResultShouldAutoStop(false);
+        setCaptureStatusLabel(undefined);
         setCaptureStatusTone('failed');
         setCaptureStatusMessage(`Capture failed: ${backendResult.message}`);
         setLastSyncStatus(`Capture sync failed: ${backendResult.message}`);
@@ -680,37 +978,54 @@ export function MapScreen() {
 
       setSavedTerritories((previousTerritories) => {
         const filteredTerritories = previousTerritories.filter(
-          (territory) => !captureOperation.capturedTerritoryIds.includes(territory.id),
+          (territory) => !captureOperation.result.capturedTerritoryIds.includes(territory.id),
         );
 
         return [...filteredTerritories, captureOperation.newLocalTerritory];
       });
-      setHasAutoSavedCurrentRoute(true);
       setCapturePromptVisible(false);
+      setHasCapturedCurrentRoute(true);
+      setLastSaveResultReason('captured');
+      setLastSaveResultShouldAutoStop(false);
+      setLastCarveApplied(captureOperation.result.carvedTerritoryIds.length > 0);
+      setLastFullCaptureApplied(captureOperation.result.didCapture);
+      setLastCarvedTerritoryIds(captureOperation.result.carvedTerritoryIds);
+      setLastResultingGeometryValid(captureOperation.geometryValid);
+      setCaptureStatusLabel(captureOperation.result.didCapture ? 'Territory captured' : 'Enemy territory reduced');
       setCaptureStatusTone('success');
       setCaptureStatusMessage(
-        `Captured ${captureOperation.capturedTerritoryIds.length} territory and transferred ownership.`,
+        captureOperation.result.didCapture ? 'Territory captured' : 'Enemy territory reduced',
       );
       setLastSaveStatus('Capture completed.');
       setLastSyncStatus(backendResult.message);
-      await loadOnlineTerritories();
+      updateCooldownTimestamp('lastCaptureAt');
+      setLastCooldownBlockReason('none');
+      await loadOnlineTerritories('system');
     } finally {
       setIsCaptureProcessing(false);
     }
   }
 
-  const saveTerritory = useCallback((trigger: 'auto' | 'manual' = 'manual'): void => {
+  const saveTerritory = useCallback(async (trigger: 'auto' | 'manual' = 'manual'): Promise<SaveResult> => {
     if (!territoryPreviewPayload || !territoryPreviewSignature) {
       setLastSaveStatus('Preview is not ready to save.');
-      return;
+      setLastSaveResultReason('invalid');
+      setLastSaveResultShouldAutoStop(false);
+      return { reason: 'invalid', saved: false, shouldAutoStop: false };
     }
 
-    if (claimValidationResult.isCaptureAllowed) {
+    if (claimValidationResult.isCaptureAllowed && trigger === 'manual') {
+      if (capturePromptSignature) {
+        setLastCapturePromptSignature(capturePromptSignature);
+      }
       setCapturePromptVisible(true);
+      setCaptureStatusLabel(undefined);
       setCaptureStatusTone('available');
       setCaptureStatusMessage(`Enemy coverage ${captureCoveragePercentLabel}. Confirm to capture.`);
       setLastSaveStatus('Capture available. Waiting for confirmation.');
-      return;
+      setLastSaveResultReason('failed');
+      setLastSaveResultShouldAutoStop(false);
+      return { reason: 'failed', saved: false, shouldAutoStop: false };
     }
 
     if (!claimValidationResult.isClaimAllowed) {
@@ -719,97 +1034,216 @@ export function MapScreen() {
           ? `Auto-save blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`
           : `Save blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`,
       );
-      return;
+      setLastSaveResultReason('invalid');
+      setLastSaveResultShouldAutoStop(false);
+      return { reason: 'invalid', saved: false, shouldAutoStop: false };
+    }
+
+    if (!claimCooldown.allowed && !claimValidationResult.isCaptureAllowed) {
+      setLastCooldownBlockReason(claimCooldown.reason);
+      setLastSaveStatus(`Claim cooldown active: ${formatCooldownSeconds(claimCooldown.remainingMs)}s remaining`);
+      setLastSaveResultReason('cooldown');
+      setLastSaveResultShouldAutoStop(false);
+      return { reason: 'cooldown', saved: false, shouldAutoStop: false };
     }
 
     const previousTerritories = savedTerritories;
-    const lastSaved = previousTerritories.at(-1) ?? null;
+    const duplicateTerritory = previousTerritories.find((savedTerritory) =>
+      isDuplicateTerritoryByTolerance(savedTerritory, territoryPreviewPayload),
+    );
 
-    if (
-      lastSaved &&
-      Math.abs(lastSaved.areaM2 - territoryPreviewPayload.areaM2) < 0.01 &&
-      lastSaved.sourceRoutePointCount === territoryPreviewPayload.sourceRoutePointCount
-    ) {
+    if (duplicateTerritory) {
       setLastSaveStatus(trigger === 'auto' ? 'Auto-save skipped: already saved.' : 'This territory is already saved.');
-      return;
+      setLastSaveResultReason('duplicate');
+      setLastSaveResultShouldAutoStop(false);
+      return { reason: 'duplicate', saved: false, shouldAutoStop: false };
     }
 
-    const nextTerritory: LocalSavedTerritory = {
-      ...territoryPreviewPayload,
-      id: createId(),
-      status: 'local_saved',
-    };
+    const territoryInteractionPlan = executeTerritoryCapture(
+      territoryPreviewPayload,
+      enemyOnlineTerritories,
+      claimValidationResult,
+    );
+    const didFullCapture =
+      claimValidationResult.isCaptureAllowed &&
+      territoryInteractionPlan.result.didCapture &&
+      territoryInteractionPlan.maxEnemyCoveragePercent >= CLAIM_RULE_CONFIG.captureCandidateThresholdPercent;
+    const nextTerritory: LocalSavedTerritory = didFullCapture
+      ? territoryInteractionPlan.newLocalTerritory
+      : {
+          ...territoryPreviewPayload,
+          id: createId(),
+          status: 'local_saved',
+        };
 
     setSavedTerritories([...previousTerritories, nextTerritory]);
     setLastSaveStatus(
-      trigger === 'auto'
-        ? `Auto-saved territory ${previousTerritories.length + 1}.`
-        : `Saved territory ${previousTerritories.length + 1}.`,
+      didFullCapture
+        ? 'Bölge ele geçirildi.'
+        : trigger === 'auto'
+          ? `Auto-saved territory ${previousTerritories.length + 1}.`
+          : `Saved territory ${previousTerritories.length + 1}.`,
     );
+    updateCooldownTimestamp('lastClaimAt');
+    setLastCooldownBlockReason('none');
+    setLastCarveApplied(territoryInteractionPlan.result.carvedTerritoryIds.length > 0);
+    setLastFullCaptureApplied(didFullCapture);
+    setLastCarvedTerritoryIds(territoryInteractionPlan.result.carvedTerritoryIds);
+    setLastResultingGeometryValid(territoryInteractionPlan.geometryValid);
+    if (capturePromptSignature) {
+      setLastCapturePromptSignature(capturePromptSignature);
+    }
+    setCapturePromptVisible(false);
+
+    if (didFullCapture) {
+      setHasCapturedCurrentRoute(true);
+      setHasAutoSavedCurrentRoute(trigger === 'auto');
+
+      if (backendConfigured) {
+        const backendResult = await transferTerritoryOwnership(
+          territoryInteractionPlan.result.capturedTerritoryIds,
+          territoryInteractionPlan.carvedTerritories,
+          nextTerritory,
+          currentPlayerProfile?.playerId ?? null,
+        );
+
+        if (backendResult.success) {
+          setCaptureStatusLabel('Territory captured');
+          setCaptureStatusTone('success');
+          setCaptureStatusMessage('Bölge ele geçirildi');
+          setLastSyncStatus(backendResult.message);
+          await loadOnlineTerritories('system');
+        } else {
+          setCaptureStatusLabel('Territory captured locally');
+          setCaptureStatusTone('failed');
+          setCaptureStatusMessage(`Bölge yerelde kaydedildi. Backend senkronu başarısız: ${backendResult.message}`);
+          setLastSyncStatus(`Capture sync failed: ${backendResult.message}`);
+        }
+      } else {
+        setCaptureStatusLabel('Territory captured');
+        setCaptureStatusTone('success');
+        setCaptureStatusMessage('Bölge ele geçirildi');
+      }
+
+      if (trigger === 'auto') {
+        showAutoSaveSuccessBanner('Bölge ele geçirildi');
+      }
+
+      setLastSaveResultReason('captured');
+      setLastSaveResultShouldAutoStop(trigger === 'auto');
+      return {
+        reason: 'captured',
+        saved: true,
+        shouldAutoStop: trigger === 'auto',
+      };
+    }
+
+    if (backendConfigured && territoryInteractionPlan.result.carvedTerritoryIds.length > 0) {
+      const backendResult = await transferTerritoryOwnership(
+        [],
+        territoryInteractionPlan.carvedTerritories,
+        nextTerritory,
+        currentPlayerProfile?.playerId ?? null,
+      );
+
+      if (backendResult.success) {
+        setCaptureStatusLabel('Enemy territory reduced');
+        setCaptureStatusTone('success');
+        setCaptureStatusMessage('New territory claimed');
+        setLastSyncStatus(backendResult.message);
+        await loadOnlineTerritories('system');
+      } else {
+        setCaptureStatusLabel(undefined);
+        setCaptureStatusTone('failed');
+        setCaptureStatusMessage(`Territory update failed: ${backendResult.message}`);
+        setLastSyncStatus(`Partial carve sync failed: ${backendResult.message}`);
+      }
+    } else {
+      setCaptureStatusLabel(undefined);
+      setCaptureStatusMessage(null);
+    }
 
     if (trigger === 'auto') {
-      setHasAutoSavedCurrentRoute(true);
-      showAutoSaveSuccessBanner();
-      stopTracking('auto_save');
+      showAutoSaveSuccessBanner(
+        territoryInteractionPlan.result.carvedTerritoryIds.length > 0 ? 'New territory claimed' : 'Bölgeniz kaydedildi',
+      );
     }
+    setLastSaveResultReason('saved');
+    setLastSaveResultShouldAutoStop(trigger === 'auto');
+    return {
+      reason: 'saved',
+      saved: true,
+      shouldAutoStop: trigger === 'auto',
+    };
   }, [
+    backendConfigured,
+    capturePromptSignature,
     captureCoveragePercentLabel,
+    claimCooldown.allowed,
+    claimCooldown.reason,
+    claimCooldown.remainingMs,
     claimValidationResult,
+    currentPlayerProfile?.playerId,
+    enemyOnlineTerritories,
+    loadOnlineTerritories,
     savedTerritories,
     showAutoSaveSuccessBanner,
-    stopTracking,
     territoryPreviewPayload,
     territoryPreviewSignature,
+    updateCooldownTimestamp,
   ]);
 
   useEffect(() => {
-    if (hasAutoSavedCurrentRoute) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
+    saveTerritoryRef.current = saveTerritory;
+  }, [saveTerritory]);
+
+  useEffect(() => {
+    if (!autoSaveEligible) {
+      clearAutoSaveTimer();
+
+      if (autoSaveBlockedReason === 'claim_not_allowed') {
+        setLastSaveStatus(`Claim blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`);
       }
-      setLastSaveStatus('Auto-save skipped: already saved this route');
+
+      if (autoSaveBlockedReason === 'claim_cooldown_active') {
+        setLastSaveStatus(`Claim cooldown active: ${formatCooldownSeconds(claimCooldown.remainingMs)}s remaining`);
+      }
+
       return;
     }
 
-    if (!territoryPreviewPayload || !territoryPreviewSignature) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
+    if (autoSaveTimeoutRef.current) {
       return;
     }
 
-    if (claimValidationResult.isCaptureAllowed) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-      setLastSaveStatus('Capture available: confirmation required.');
-      return;
-    }
-
-    if (!claimValidationResult.isClaimAllowed) {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
-      setLastSaveStatus(`Claim blocked: ${formatClaimRejectReason(claimValidationResult.rejectReason)}`);
-      return;
-    }
-
+    setIsAutoSaveTimerActive(true);
     autoSaveTimeoutRef.current = setTimeout(() => {
-      saveTerritory('auto');
       autoSaveTimeoutRef.current = null;
-    }, 2000);
+      setIsAutoSaveTimerActive(false);
 
+      void (async () => {
+        const result = await saveTerritoryRef.current?.('auto');
+
+        if (result?.saved && result.shouldAutoStop) {
+          setHasAutoSavedCurrentRoute(true);
+          stopTrackingCore('auto_save', false);
+        }
+      })();
+    }, 2000);
+  }, [
+    autoSaveBlockedReason,
+    autoSaveEligible,
+    claimCooldown.remainingMs,
+    claimValidationResult.rejectReason,
+    clearAutoSaveTimer,
+    stopTrackingCore,
+  ]);
+
+  useEffect(() => {
     return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-        autoSaveTimeoutRef.current = null;
-      }
+      clearAutoSaveTimer();
     };
-  }, [claimValidationResult, hasAutoSavedCurrentRoute, saveTerritory, territoryPreviewPayload, territoryPreviewSignature]);
+  }, [clearAutoSaveTimer]);
 
   if (!MAPBOX_ACCESS_TOKEN) {
     return (
@@ -830,7 +1264,7 @@ export function MapScreen() {
         <OnlineTerritoriesLayer
           conflictSeverity={conflictVisualizationState.severity}
           conflictingTerritoryIds={territoryOverlapAnalysis.overlappingTerritoryIds}
-          territories={onlineTerritoriesWithOwnership}
+          territories={displayOnlineTerritories}
         />
         <SavedTerritoriesLayer territories={savedTerritories} />
         <PolygonPreview
@@ -841,6 +1275,7 @@ export function MapScreen() {
         <RouteLine geoJSON={routeGeoJSON} isPolygonCandidate={polygonAnalysis.isCandidate} />
       </Mapbox.MapView>
       <CaptureStatusBanner
+        label={captureStatusLabel}
         message={captureStatusMessage ?? ''}
         tone={captureStatusTone}
         visible={captureStatusMessage !== null}
@@ -855,6 +1290,7 @@ export function MapScreen() {
         coveragePercentLabel={captureCoveragePercentLabel}
         onCancel={() => {
           setCapturePromptVisible(false);
+          setCaptureStatusLabel(undefined);
           setCaptureStatusMessage('Capture cancelled.');
           setCaptureStatusTone('failed');
         }}
@@ -896,8 +1332,12 @@ export function MapScreen() {
         areaHectareLabel={areaHectareLabel}
         areaM2Label={areaM2Label}
         backendConfigured={backendConfigured}
+        canFetchOnlineTerritories={canFetchOnlineTerritories}
+        canStartTracking={canStartTracking}
+        canStopTracking={canStopTracking}
         canSaveTerritory={
-          isSaveTerritoryEnabled && (claimValidationResult.isClaimAllowed || claimValidationResult.isCaptureAllowed)
+          isSaveTerritoryEnabled &&
+          ((claimValidationResult.isClaimAllowed && claimCooldown.allowed) || claimValidationResult.isCaptureAllowed)
         }
         canSync={isSyncEnabled}
         claimLabel={claimLabel}
@@ -911,13 +1351,13 @@ export function MapScreen() {
           void clearSavedTerritories();
         }}
         onFetchOnlineTerritories={() => {
-          void loadOnlineTerritories();
+          void loadOnlineTerritories('manual');
         }}
         onResetIdentity={() => {
           void resetPlayerIdentity();
         }}
         onSaveTerritory={() => {
-          saveTerritory('manual');
+          void saveTerritory('manual');
         }}
         onStartTracking={() => {
           void startTracking();
@@ -949,6 +1389,31 @@ function formatMeters(value: number | null): string {
   }
 
   return `${value.toFixed(1)} m`;
+}
+
+function formatCooldownSeconds(remainingMs: number): string {
+  return Math.ceil(Math.max(0, remainingMs) / 1000).toString();
+}
+
+function formatCooldownRemaining(remainingMs: number): string {
+  if (remainingMs <= 0) {
+    return 'Ready';
+  }
+
+  return `${formatCooldownSeconds(remainingMs)}s`;
+}
+
+function isDuplicateTerritoryByTolerance(
+  savedTerritory: LocalSavedTerritory,
+  territoryPreviewPayload: TerritoryPreviewPayload,
+): boolean {
+  const areaDifference = Math.abs(savedTerritory.areaM2 - territoryPreviewPayload.areaM2);
+  const pointDifference = Math.abs(savedTerritory.sourceRoutePointCount - territoryPreviewPayload.sourceRoutePointCount);
+
+  return (
+    areaDifference <= COOLDOWN_CONFIG.duplicateAreaToleranceM2 &&
+    pointDifference <= COOLDOWN_CONFIG.duplicatePointCountTolerance
+  );
 }
 
 function buildOverlapComparableTerritories(
@@ -1013,6 +1478,36 @@ function getTerritoryGeometrySignature(coordinates: readonly Coordinates[]): str
     .map((coordinate) => `${coordinate.latitude.toFixed(5)}:${coordinate.longitude.toFixed(5)}`)
     .sort()
     .join('|');
+}
+
+function getUnsyncedSavedTerritories(
+  savedTerritories: readonly LocalSavedTerritory[],
+  onlineTerritories: readonly OnlineTerritory[],
+): LocalSavedTerritory[] {
+  const syncedGeometrySignatures = new Set(
+    onlineTerritories
+      .filter((territory) => territory.isMine === true)
+      .map((territory) => getTerritoryGeometrySignature(territory.coordinates)),
+  );
+
+  return savedTerritories.filter(
+    (territory) => !syncedGeometrySignatures.has(getTerritoryGeometrySignature(territory.coordinates)),
+  );
+}
+
+function getDisplayOnlineTerritories(
+  onlineTerritories: readonly OnlineTerritory[],
+  savedTerritories: readonly LocalSavedTerritory[],
+): OnlineTerritory[] {
+  const localGeometrySignatures = new Set(savedTerritories.map((territory) => getTerritoryGeometrySignature(territory.coordinates)));
+
+  return onlineTerritories.filter((territory) => {
+    if (territory.isMine !== true) {
+      return true;
+    }
+
+    return !localGeometrySignatures.has(getTerritoryGeometrySignature(territory.coordinates));
+  });
 }
 
 function formatAreaSquareMeters(value: number | null): string {

@@ -4,6 +4,8 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { uiColors, uiHud, uiRadius, uiSpacing, uiTypography } from '../../config/uiConfig';
 
 type TrackingControlsProps = {
+  canStartTracking: boolean;
+  canStopTracking: boolean;
   canSaveTerritory: boolean;
   canSync: boolean;
   isTracking: boolean;
@@ -14,6 +16,8 @@ type TrackingControlsProps = {
 };
 
 function TrackingControlsComponent({
+  canStartTracking,
+  canStopTracking,
   canSaveTerritory,
   canSync,
   isTracking,
@@ -25,25 +29,25 @@ function TrackingControlsComponent({
   return (
     <View style={styles.container}>
       <Pressable
-        disabled={isTracking}
+        disabled={!canStartTracking}
         onPress={onStartTracking}
         style={({ pressed }) => [
           styles.primaryButton,
           styles.startButton,
-          isTracking ? styles.disabledButton : null,
-          pressed && !isTracking ? styles.pressed : null,
+          !canStartTracking ? styles.disabledButton : null,
+          pressed && canStartTracking ? styles.pressed : null,
         ]}
       >
         <Text style={styles.primaryLabel}>Start Run</Text>
       </Pressable>
       <Pressable
-        disabled={!isTracking}
+        disabled={!canStopTracking}
         onPress={onStopTracking}
         style={({ pressed }) => [
           styles.secondaryPill,
           styles.stopPill,
-          !isTracking ? styles.disabledButton : null,
-          pressed && isTracking ? styles.pressed : null,
+          !canStopTracking ? styles.disabledButton : null,
+          pressed && canStopTracking ? styles.pressed : null,
         ]}
       >
         <Text style={styles.secondaryLabel}>Stop</Text>

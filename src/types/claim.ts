@@ -16,8 +16,14 @@ export type ClaimValidationResult = {
 };
 
 export type TerritoryCaptureResult = {
-  captureReason: 'none' | 'enemy_territory_captured' | 'capture_failed';
+  captureReason:
+    | 'none'
+    | 'enemy_territory_captured'
+    | 'enemy_territory_reduced'
+    | 'territory_claimed'
+    | 'capture_failed';
   captureTimestamp: string;
+  carvedTerritoryIds: string[];
   capturedTerritoryIds: string[];
   didCapture: boolean;
   newTerritoryId?: string;

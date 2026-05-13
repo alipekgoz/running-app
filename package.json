@@ -19,6 +19,7 @@
     "expo-crypto": "~15.0.9",
     "expo-location": "~19.0.8",
     "expo-status-bar": "~3.0.9",
+    "martinez-polygon-clipping": "^0.8.1",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-safe-area-context": "^5.7.0",
