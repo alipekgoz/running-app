@@ -1,5 +1,6 @@
-import type { Coordinates, LocalSavedTerritory, OnlineTerritory, TerritoryCaptureResult } from '../types';
+import type { Coordinates, LocalSavedTerritory, OnlineTerritory, TerritoryCaptureResult, ViewportBounds } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
+import { filterTerritoriesByViewport } from '../utils/geo/filterTerritoriesByViewport';
 import { getSupabaseClient } from './supabaseClient';
 
 type UploadResult = {
@@ -8,9 +9,14 @@ type UploadResult = {
 };
 
 type FetchTerritoriesResult = {
+  didApplyViewportFilter?: boolean;
   message: string;
   success: boolean;
   territories: OnlineTerritory[];
+};
+
+type FetchTerritoriesForViewportOptions = {
+  bounds?: ViewportBounds | null;
 };
 
 type CaptureTransferResult = {
@@ -114,6 +120,7 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
 
   if (!isBackendConfigured() || !supabase) {
     return {
+      didApplyViewportFilter: false,
       message: 'Backend is not configured.',
       success: false,
       territories: [],
@@ -128,6 +135,7 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
 
     if (error) {
       return {
+        didApplyViewportFilter: false,
         message: error.message,
         success: false,
         territories: [],
@@ -140,6 +148,7 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
       .filter((territory): territory is OnlineTerritory => territory !== null);
 
     return {
+      didApplyViewportFilter: false,
       message: `Fetched ${territories.length} online territories.`,
       success: true,
       territories,
@@ -148,6 +157,7 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
     const errorMessage = error instanceof Error ? error.message : 'Unknown fetch error';
 
     return {
+      didApplyViewportFilter: false,
       message: errorMessage,
       success: false,
       territories: [],
@@ -155,8 +165,23 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
   }
 }
 
-export async function fetchTerritoriesForViewport(): Promise<FetchTerritoriesResult> {
-  return fetchTerritories();
+export async function fetchTerritoriesForViewport(
+  options: FetchTerritoriesForViewportOptions = {},
+): Promise<FetchTerritoriesResult> {
+  const baseResult = await fetchTerritories();
+
+  if (!baseResult.success || !options.bounds) {
+    return baseResult;
+  }
+
+  const filteredTerritories = filterTerritoriesByViewport(baseResult.territories, options.bounds);
+
+  return {
+    didApplyViewportFilter: true,
+    message: `Fetched ${baseResult.territories.length} online territories. Viewport filtered to ${filteredTerritories.length}.`,
+    success: true,
+    territories: filteredTerritories,
+  };
 }
 
 export async function uploadTerritory(

@@ -1,12 +1,13 @@
 import Mapbox from '@rnmapbox/maps';
 import * as Location from 'expo-location';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, Dimensions, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { CaptureConfirmationCard } from '../components/hud/CaptureConfirmationCard';
 import { CaptureStatusBanner } from '../components/hud/CaptureStatusBanner';
 import { GameHUD } from '../components/hud/GameHUD';
 import { COOLDOWN_CONFIG } from '../config/cooldownConfig';
+import { PERFORMANCE_CONFIG } from '../config/performanceConfig';
 import { OnlineTerritoriesLayer } from '../components/map/OnlineTerritoriesLayer';
 import { RouteLine } from '../components/map/RouteLine';
 import { PolygonPreview } from '../components/map/PolygonPreview';
@@ -23,6 +24,7 @@ import type {
   OverlapComparableTerritory,
   PlayerProfile,
   TerritoryPreviewPayload,
+  ViewportBounds,
 } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
@@ -36,7 +38,7 @@ import {
   saveSavedTerritories,
 } from '../services/territoryStorageService';
 import {
-  fetchTerritories,
+  fetchTerritoriesForViewport,
   isBackendConfigured,
   transferTerritoryOwnership,
   uploadTerritories,
@@ -44,11 +46,14 @@ import {
 import { CLAIM_RULE_CONFIG } from '../config/claimRulesConfig';
 import { getGpsPointRejectionReason } from '../utils/gpsFilter';
 import { analyzePolygonArea } from '../utils/geo/calculatePolygonArea';
+import { calculateViewportBounds } from '../utils/geo/calculateViewportBounds';
 import { analyzeTerritoryOverlap } from '../utils/analyzeTerritoryOverlap';
 import { buildConflictVisualizationState } from '../utils/buildConflictVisualizationState';
 import { buildTerritoryPreviewPayload } from '../utils/geo/buildTerritoryPreviewPayload';
+import { filterTerritoriesByViewport } from '../utils/geo/filterTerritoriesByViewport';
 import { analyzePolygonCandidate } from '../utils/geo/isPolygonCandidate';
 import { analyzePolygonPreview } from '../utils/geo/routeToPolygonGeoJSON';
+import { simplifyPolygon } from '../utils/geo/simplifyPolygon';
 import { createId } from '../utils/createId';
 import { executeTerritoryCapture } from '../utils/executeTerritoryCapture';
 import { checkCooldown } from '../utils/checkCooldown';
@@ -76,6 +81,20 @@ type AutoSaveBlockedReason =
   | 'capture_processing'
   | 'claim_not_allowed'
   | 'claim_cooldown_active';
+
+type RefreshOnlineTerritoriesReason = 'manual' | 'startup' | 'capture' | 'carve' | 'sync';
+
+type RenderTerritoryMetrics = {
+  renderedSavedTerritories: LocalSavedTerritory[];
+  renderedOnlineTerritories: OnlineTerritory[];
+  savedPointsAfterSimplify: number;
+  savedPointsBeforeSimplify: number;
+  simplificationApplied: boolean;
+  visibleOnlineTerritories: OnlineTerritory[];
+  visibleSavedTerritories: LocalSavedTerritory[];
+};
+
+type MapCameraChangedEvent = Parameters<NonNullable<ComponentProps<typeof Mapbox.MapView>['onCameraChanged']>>[0];
 
 export function MapScreen() {
   const autoSaveSuccessBannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,6 +129,8 @@ export function MapScreen() {
   const [onlineTerritoriesLoading, setOnlineTerritoriesLoading] = useState(false);
   const [onlineTerritoriesError, setOnlineTerritoriesError] = useState<string | null>(null);
   const [lastFetchStatus, setLastFetchStatus] = useState('No online fetch yet.');
+  const [lastFetchReason, setLastFetchReason] = useState<RefreshOnlineTerritoriesReason | null>(null);
+  const [lastFetchDurationMs, setLastFetchDurationMs] = useState<number | null>(null);
   const [capturePromptVisible, setCapturePromptVisible] = useState(false);
   const [captureStatusLabel, setCaptureStatusLabel] = useState<string | undefined>(undefined);
   const [captureStatusMessage, setCaptureStatusMessage] = useState<string | null>(null);
@@ -120,6 +141,8 @@ export function MapScreen() {
   const [lastSaveResultShouldAutoStop, setLastSaveResultShouldAutoStop] = useState<boolean | null>(null);
   const [cooldownState, setCooldownState] = useState<CooldownState>({});
   const [cooldownNowMs, setCooldownNowMs] = useState(() => Date.now());
+  const [currentViewportBounds, setCurrentViewportBounds] = useState<ViewportBounds | null>(null);
+  const [debouncedViewportBounds, setDebouncedViewportBounds] = useState<ViewportBounds | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTerritoryRef = useRef<((trigger?: 'auto' | 'manual') => Promise<SaveResult>) | null>(null);
@@ -139,12 +162,23 @@ export function MapScreen() {
     [polygonAreaAnalysis, polygonPreviewAnalysis, routePoints],
   );
   const isSaveTerritoryEnabled = territoryPreviewPayload !== null;
+  const initialZoomLevel = currentLocation ? 15 : 11;
   const cameraCenterCoordinate = useMemo<[number, number]>(
     () => [
       currentLocation?.longitude ?? DEFAULT_MAP_CENTER.longitude,
       currentLocation?.latitude ?? DEFAULT_MAP_CENTER.latitude,
     ],
     [currentLocation],
+  );
+  const fallbackViewportBounds = useMemo(
+    () =>
+      calculateViewportBounds({
+        aspectRatio: Dimensions.get('window').width / Math.max(Dimensions.get('window').height, 1),
+        center: currentLocation ?? DEFAULT_MAP_CENTER,
+        paddingRatio: PERFORMANCE_CONFIG.viewportPaddingRatio,
+        zoomLevel: initialZoomLevel,
+      }),
+    [currentLocation, initialZoomLevel],
   );
   const lastRoutePoint = routePoints.at(-1) ?? null;
   const lastSavedTerritory = savedTerritories.at(-1) ?? null;
@@ -202,10 +236,68 @@ export function MapScreen() {
     () => getDisplayOnlineTerritories(onlineTerritoriesWithOwnership, savedTerritories),
     [onlineTerritoriesWithOwnership, savedTerritories],
   );
+  const renderViewportBounds = currentViewportBounds ?? fallbackViewportBounds;
   const isSyncEnabled = backendConfigured && unsyncedSavedTerritories.length > 0 && syncCooldown.allowed;
   const canFetchOnlineTerritories = backendConfigured && syncCooldown.allowed && !onlineTerritoriesLoading;
   const canStartTracking = !isTracking && startStopCooldown.allowed;
   const canStopTracking = isTracking && startStopCooldown.allowed;
+  const renderTerritoryMetrics = useMemo<RenderTerritoryMetrics>(() => {
+    const visibleOnlineTerritories = filterTerritoriesByViewport(displayOnlineTerritories, renderViewportBounds);
+    const visibleSavedTerritories = filterTerritoriesByViewport(savedTerritories, renderViewportBounds);
+    const limitedOnlineTerritories = limitTerritoriesForRender(
+      visibleOnlineTerritories,
+      PERFORMANCE_CONFIG.maxRenderedOnlineTerritories,
+      renderViewportBounds,
+    );
+    const limitedSavedTerritories = limitTerritoriesForRender(
+      visibleSavedTerritories,
+      PERFORMANCE_CONFIG.maxRenderedLocalTerritories,
+      renderViewportBounds,
+    );
+    let simplificationApplied = false;
+    let savedPointsBeforeSimplify = 0;
+    let savedPointsAfterSimplify = 0;
+    const renderedOnlineTerritories = limitedOnlineTerritories.map((territory) => {
+      savedPointsBeforeSimplify += territory.coordinates.length;
+      const simplifiedCoordinates =
+        territory.coordinates.length > PERFORMANCE_CONFIG.maxPolygonPointsBeforeSimplify
+          ? simplifyPolygon(territory.coordinates, PERFORMANCE_CONFIG.polygonSimplificationTolerance)
+          : [...territory.coordinates];
+
+      savedPointsAfterSimplify += simplifiedCoordinates.length;
+      simplificationApplied = simplificationApplied || simplifiedCoordinates.length !== territory.coordinates.length;
+
+      return {
+        ...territory,
+        coordinates: simplifiedCoordinates,
+      };
+    });
+    const renderedSavedTerritories = limitedSavedTerritories.map((territory) => {
+      savedPointsBeforeSimplify += territory.coordinates.length;
+      const simplifiedCoordinates =
+        territory.coordinates.length > PERFORMANCE_CONFIG.maxPolygonPointsBeforeSimplify
+          ? simplifyPolygon(territory.coordinates, PERFORMANCE_CONFIG.polygonSimplificationTolerance)
+          : [...territory.coordinates];
+
+      savedPointsAfterSimplify += simplifiedCoordinates.length;
+      simplificationApplied = simplificationApplied || simplifiedCoordinates.length !== territory.coordinates.length;
+
+      return {
+        ...territory,
+        coordinates: simplifiedCoordinates,
+      };
+    });
+
+    return {
+      renderedOnlineTerritories,
+      renderedSavedTerritories,
+      savedPointsAfterSimplify,
+      savedPointsBeforeSimplify,
+      simplificationApplied,
+      visibleOnlineTerritories,
+      visibleSavedTerritories,
+    };
+  }, [displayOnlineTerritories, renderViewportBounds, savedTerritories]);
   const overlapComparableOnlineTerritories = useMemo(
     () =>
       onlineTerritoriesWithOwnership.filter(
@@ -249,6 +341,36 @@ export function MapScreen() {
     ],
   );
   const claimLabel = useMemo(() => formatClaimLabel(claimValidationResult), [claimValidationResult]);
+  const handleMapCameraChanged = useCallback((state: MapCameraChangedEvent): void => {
+    const center = state.properties.center;
+    const nextViewportBounds = calculateViewportBounds({
+      center: {
+        latitude: center[1],
+        longitude: center[0],
+      },
+      paddingRatio: PERFORMANCE_CONFIG.viewportPaddingRatio,
+      visibleBounds: {
+        ne: [state.properties.bounds.ne[0], state.properties.bounds.ne[1]],
+        sw: [state.properties.bounds.sw[0], state.properties.bounds.sw[1]],
+      },
+      zoomLevel: state.properties.zoom,
+    });
+
+    setCurrentViewportBounds((previousBounds) => {
+      if (
+        previousBounds &&
+        previousBounds.east === nextViewportBounds.east &&
+        previousBounds.west === nextViewportBounds.west &&
+        previousBounds.north === nextViewportBounds.north &&
+        previousBounds.south === nextViewportBounds.south &&
+        previousBounds.zoomLevel === nextViewportBounds.zoomLevel
+      ) {
+        return previousBounds;
+      }
+
+      return nextViewportBounds;
+    });
+  }, []);
   const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
   const playerCreatedAtLabel = useMemo(
     () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
@@ -343,6 +465,7 @@ export function MapScreen() {
     () => [
       `Location: ${locationDebugText}`,
       `Route point count: ${routePoints.length}`,
+      `Performance debug enabled: ${PERFORMANCE_CONFIG.enablePerformanceDebug ? 'Yes' : 'No'}`,
       `Route line rendered: ${isRouteLineRendered ? 'Yes' : 'No'}`,
       `GeoJSON valid: ${routeGeoJSON ? 'Yes' : 'No'}`,
       `Closure distance: ${formatMeters(polygonAnalysis.closureDistanceMeters)}`,
@@ -359,6 +482,14 @@ export function MapScreen() {
       `Online territory count: ${onlineTerritoriesWithOwnership.length}`,
       `Enemy online territory count: ${enemyOnlineTerritories.length}`,
       `Displayed online territory count: ${displayOnlineTerritories.length}`,
+      `Visible online territories count: ${renderTerritoryMetrics.visibleOnlineTerritories.length}`,
+      `Rendered online territories count: ${renderTerritoryMetrics.renderedOnlineTerritories.length}`,
+      `Rendered saved territories count: ${renderTerritoryMetrics.renderedSavedTerritories.length}`,
+      `Last fetch reason: ${lastFetchReason ?? 'None'}`,
+      `Last fetch duration ms: ${lastFetchDurationMs ?? 0}`,
+      `Render simplification applied: ${renderTerritoryMetrics.simplificationApplied ? 'Yes' : 'No'}`,
+      `Render polygon points before simplify: ${renderTerritoryMetrics.savedPointsBeforeSimplify}`,
+      `Render polygon points after simplify: ${renderTerritoryMetrics.savedPointsAfterSimplify}`,
       `Unsynced saved territory count: ${unsyncedSavedTerritories.length}`,
       `Overlap detected: ${territoryOverlapAnalysis.hasOverlap ? 'Yes' : 'No'}`,
       `Overlap count: ${territoryOverlapAnalysis.overlapCount}`,
@@ -444,6 +575,8 @@ export function MapScreen() {
       cooldownState,
       cooldownNowMs,
       lastCooldownBlockReason,
+      lastFetchDurationMs,
+      lastFetchReason,
       lastFetchStatus,
       lastRejectedReason,
       lastRoutePoint,
@@ -456,6 +589,7 @@ export function MapScreen() {
       onlineTerritoriesError,
       onlineTerritoriesLoading,
       displayOnlineTerritories.length,
+      renderTerritoryMetrics,
       enemyOnlineTerritories.length,
       onlineTerritoriesWithOwnership.length,
       lastCarveApplied,
@@ -612,7 +746,7 @@ export function MapScreen() {
         return;
       }
 
-      await loadOnlineTerritories();
+      await refreshOnlineTerritories('startup');
     }
 
     void hydrateSavedTerritories();
@@ -648,6 +782,16 @@ export function MapScreen() {
   }, [hasAutoSavedCurrentRoute, hasCapturedCurrentRoute]);
 
   useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedViewportBounds(renderViewportBounds);
+    }, PERFORMANCE_CONFIG.fetchDebounceMs);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [renderViewportBounds]);
+
+  useEffect(() => {
     if (territoriesLoading) {
       return;
     }
@@ -674,29 +818,39 @@ export function MapScreen() {
     setCooldownNowMs(Date.now());
   }, []);
 
-  async function loadOnlineTerritories(trigger: 'manual' | 'system' = 'system'): Promise<void> {
+  const refreshOnlineTerritories = useCallback(async (reason: RefreshOnlineTerritoriesReason): Promise<void> => {
     if (!backendConfigured) {
       setOnlineTerritories([]);
       setOnlineTerritoriesError(null);
+      setLastFetchReason(reason);
+      setLastFetchDurationMs(0);
       setLastFetchStatus('Backend config missing. Online fetch skipped.');
       return;
     }
 
-    if (trigger === 'manual' && !syncCooldown.allowed) {
+    if (reason === 'manual' && !syncCooldown.allowed) {
       const cooldownMessage = `Sync cooldown active: ${formatCooldownSeconds(syncCooldown.remainingMs)}s remaining`;
 
       setLastCooldownBlockReason(syncCooldown.reason);
+      setLastFetchReason(reason);
+      setLastFetchDurationMs(0);
       setLastFetchStatus(cooldownMessage);
       return;
     }
 
+    const fetchStartedAt = Date.now();
+
     try {
       setOnlineTerritoriesLoading(true);
       setOnlineTerritoriesError(null);
-      if (trigger === 'manual') {
+      setLastFetchReason(reason);
+      if (reason === 'manual' || reason === 'sync') {
         updateCooldownTimestamp('lastSyncAt');
       }
-      const result = await fetchTerritories();
+      const result = await fetchTerritoriesForViewport({ bounds: debouncedViewportBounds ?? renderViewportBounds });
+      const fetchDurationMs = Date.now() - fetchStartedAt;
+
+      setLastFetchDurationMs(fetchDurationMs);
 
       if (!result.success) {
         setOnlineTerritories([]);
@@ -713,11 +867,20 @@ export function MapScreen() {
 
       setOnlineTerritories([]);
       setOnlineTerritoriesError(errorMessage);
+      setLastFetchDurationMs(Date.now() - fetchStartedAt);
       setLastFetchStatus(`Fetch failed: ${errorMessage}`);
     } finally {
       setOnlineTerritoriesLoading(false);
     }
-  }
+  }, [
+    backendConfigured,
+    debouncedViewportBounds,
+    renderViewportBounds,
+    syncCooldown.allowed,
+    syncCooldown.reason,
+    syncCooldown.remainingMs,
+    updateCooldownTimestamp,
+  ]);
 
   async function startTracking(): Promise<void> {
     if (!startStopCooldown.allowed) {
@@ -882,6 +1045,7 @@ export function MapScreen() {
     setLastSyncStatus(result.success ? result.message : `Sync failed: ${result.message}`);
     if (result.success) {
       setLastCooldownBlockReason('none');
+      await refreshOnlineTerritories('sync');
     }
   }
 
@@ -1000,7 +1164,7 @@ export function MapScreen() {
       setLastSyncStatus(backendResult.message);
       updateCooldownTimestamp('lastCaptureAt');
       setLastCooldownBlockReason('none');
-      await loadOnlineTerritories('system');
+      await refreshOnlineTerritories('capture');
     } finally {
       setIsCaptureProcessing(false);
     }
@@ -1112,7 +1276,7 @@ export function MapScreen() {
           setCaptureStatusTone('success');
           setCaptureStatusMessage('Bölge ele geçirildi');
           setLastSyncStatus(backendResult.message);
-          await loadOnlineTerritories('system');
+          await refreshOnlineTerritories('capture');
         } else {
           setCaptureStatusLabel('Territory captured locally');
           setCaptureStatusTone('failed');
@@ -1151,7 +1315,7 @@ export function MapScreen() {
         setCaptureStatusTone('success');
         setCaptureStatusMessage('New territory claimed');
         setLastSyncStatus(backendResult.message);
-        await loadOnlineTerritories('system');
+        await refreshOnlineTerritories('carve');
       } else {
         setCaptureStatusLabel(undefined);
         setCaptureStatusTone('failed');
@@ -1185,7 +1349,7 @@ export function MapScreen() {
     claimValidationResult,
     currentPlayerProfile?.playerId,
     enemyOnlineTerritories,
-    loadOnlineTerritories,
+    refreshOnlineTerritories,
     savedTerritories,
     showAutoSaveSuccessBanner,
     territoryPreviewPayload,
@@ -1258,15 +1422,15 @@ export function MapScreen() {
 
   return (
     <View style={styles.container}>
-      <Mapbox.MapView style={styles.map} styleURL={MAPBOX_STYLE_URL}>
-        <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={currentLocation ? 15 : 11} />
+      <Mapbox.MapView onCameraChanged={handleMapCameraChanged} style={styles.map} styleURL={MAPBOX_STYLE_URL}>
+        <Mapbox.Camera centerCoordinate={cameraCenterCoordinate} zoomLevel={initialZoomLevel} />
         {currentLocation ? <Mapbox.LocationPuck visible /> : null}
         <OnlineTerritoriesLayer
           conflictSeverity={conflictVisualizationState.severity}
           conflictingTerritoryIds={territoryOverlapAnalysis.overlappingTerritoryIds}
-          territories={displayOnlineTerritories}
+          territories={renderTerritoryMetrics.renderedOnlineTerritories}
         />
-        <SavedTerritoriesLayer territories={savedTerritories} />
+        <SavedTerritoriesLayer territories={renderTerritoryMetrics.renderedSavedTerritories} />
         <PolygonPreview
           conflictSeverity={conflictVisualizationState.severity}
           geoJSON={polygonPreviewAnalysis.geoJSON}
@@ -1351,7 +1515,7 @@ export function MapScreen() {
           void clearSavedTerritories();
         }}
         onFetchOnlineTerritories={() => {
-          void loadOnlineTerritories('manual');
+          void refreshOnlineTerritories('manual');
         }}
         onResetIdentity={() => {
           void resetPlayerIdentity();
@@ -1414,6 +1578,44 @@ function isDuplicateTerritoryByTolerance(
     areaDifference <= COOLDOWN_CONFIG.duplicateAreaToleranceM2 &&
     pointDifference <= COOLDOWN_CONFIG.duplicatePointCountTolerance
   );
+}
+
+function getDistanceToViewportCenter(
+  coordinates: readonly Coordinates[],
+  viewportBounds: ViewportBounds | null,
+): number {
+  if (!viewportBounds || coordinates.length === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const firstCoordinate = coordinates[0];
+  const latitudeDelta = firstCoordinate.latitude - viewportBounds.center.latitude;
+  const longitudeDelta = firstCoordinate.longitude - viewportBounds.center.longitude;
+
+  return latitudeDelta * latitudeDelta + longitudeDelta * longitudeDelta;
+}
+
+function limitTerritoriesForRender<TTerritory extends { coordinates: Coordinates[]; createdAt: string }>(
+  territories: readonly TTerritory[],
+  limit: number,
+  viewportBounds: ViewportBounds | null,
+): TTerritory[] {
+  if (territories.length <= limit) {
+    return [...territories];
+  }
+
+  return [...territories]
+    .sort((leftTerritory, rightTerritory) => {
+      const leftDistance = getDistanceToViewportCenter(leftTerritory.coordinates, viewportBounds);
+      const rightDistance = getDistanceToViewportCenter(rightTerritory.coordinates, viewportBounds);
+
+      if (Number.isFinite(leftDistance) && Number.isFinite(rightDistance) && leftDistance !== rightDistance) {
+        return leftDistance - rightDistance;
+      }
+
+      return rightTerritory.createdAt.localeCompare(leftTerritory.createdAt);
+    })
+    .slice(0, limit);
 }
 
 function buildOverlapComparableTerritories(

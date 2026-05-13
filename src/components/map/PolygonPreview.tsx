@@ -1,5 +1,5 @@
 import Mapbox from '@rnmapbox/maps';
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 
 import {
   conflictSeverityStyleConfig,
@@ -25,34 +25,34 @@ function PolygonPreviewComponent({ conflictSeverity, geoJSON, isClaimRejected }:
   }
 
   const conflictStyle = conflictSeverityStyleConfig[isClaimRejected ? 'high' : conflictSeverity];
+  const fillStyle = useMemo(
+    () =>
+      conflictSeverity === 'none'
+        ? polygonPreviewFillStyle
+        : {
+            ...polygonPreviewFillStyle,
+            fillColor: conflictStyle.color,
+            fillOpacity: conflictStyle.fillOpacity,
+          },
+    [conflictSeverity, conflictStyle],
+  );
+  const outlineStyle = useMemo(
+    () =>
+      conflictSeverity === 'none'
+        ? polygonPreviewOutlineStyle
+        : {
+            ...polygonPreviewOutlineStyle,
+            lineColor: conflictStyle.color,
+            lineOpacity: conflictStyle.lineOpacity,
+            lineWidth: isClaimRejected ? conflictStyle.lineWidth + 0.4 : conflictStyle.lineWidth,
+          },
+    [conflictSeverity, conflictStyle, isClaimRejected],
+  );
 
   return (
     <Mapbox.ShapeSource id={POLYGON_PREVIEW_SOURCE_ID} shape={geoJSON}>
-      <Mapbox.FillLayer
-        id={POLYGON_PREVIEW_FILL_LAYER_ID}
-        style={
-          conflictSeverity === 'none'
-            ? polygonPreviewFillStyle
-            : {
-                ...polygonPreviewFillStyle,
-                fillColor: conflictStyle.color,
-                fillOpacity: conflictStyle.fillOpacity,
-              }
-        }
-      />
-      <Mapbox.LineLayer
-        id={POLYGON_PREVIEW_OUTLINE_LAYER_ID}
-        style={
-          conflictSeverity === 'none'
-            ? polygonPreviewOutlineStyle
-            : {
-                ...polygonPreviewOutlineStyle,
-                lineColor: conflictStyle.color,
-                lineOpacity: conflictStyle.lineOpacity,
-                lineWidth: isClaimRejected ? conflictStyle.lineWidth + 0.4 : conflictStyle.lineWidth,
-              }
-        }
-      />
+      <Mapbox.FillLayer id={POLYGON_PREVIEW_FILL_LAYER_ID} style={fillStyle} />
+      <Mapbox.LineLayer id={POLYGON_PREVIEW_OUTLINE_LAYER_ID} style={outlineStyle} />
     </Mapbox.ShapeSource>
   );
 }

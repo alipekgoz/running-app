@@ -25,3 +25,12 @@ export type OnlineTerritory = {
   syncStatus: string;
   updatedAt: string;
 };
+
+export type ViewportBounds = {
+  center: Coordinates;
+  east: number;
+  north: number;
+  south: number;
+  west: number;
+  zoomLevel: number;
+};

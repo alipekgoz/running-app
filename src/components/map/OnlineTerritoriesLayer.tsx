@@ -108,7 +108,25 @@ function OnlineTerritoriesLayerComponent({
     () => toFeatureCollection(territories, conflictingTerritoryIdSet),
     [conflictingTerritoryIdSet, territories],
   );
-  const conflictStyle = conflictSeverityStyleConfig[conflictSeverity];
+  const conflictStyle = useMemo(() => conflictSeverityStyleConfig[conflictSeverity], [conflictSeverity]);
+  const conflictMineOutlineStyle = useMemo(
+    () => ({
+      ...onlineTerritoryConflictOutlineBaseStyle,
+      lineColor: conflictStyle.color,
+      lineOpacity: conflictStyle.territoryOpacityBoost,
+      lineWidth: onlineTerritoryMineOutlineStyle.lineWidth + conflictStyle.territoryLineWidthBoost,
+    }),
+    [conflictStyle],
+  );
+  const conflictOtherOutlineStyle = useMemo(
+    () => ({
+      ...onlineTerritoryConflictOutlineBaseStyle,
+      lineColor: conflictStyle.color,
+      lineOpacity: conflictStyle.territoryOpacityBoost,
+      lineWidth: onlineTerritoryOtherOutlineStyle.lineWidth + conflictStyle.territoryLineWidthBoost,
+    }),
+    [conflictStyle],
+  );
 
   if (!featureCollection) {
     return null;
@@ -139,22 +157,12 @@ function OnlineTerritoriesLayerComponent({
       <Mapbox.LineLayer
         filter={['all', ['==', ['get', 'isMine'], true], ['==', ['get', 'isConflicting'], true]]}
         id={ONLINE_TERRITORIES_CONFLICT_MINE_OUTLINE_LAYER_ID}
-        style={{
-          ...onlineTerritoryConflictOutlineBaseStyle,
-          lineColor: conflictStyle.color,
-          lineOpacity: conflictStyle.territoryOpacityBoost,
-          lineWidth: onlineTerritoryMineOutlineStyle.lineWidth + conflictStyle.territoryLineWidthBoost,
-        }}
+        style={conflictMineOutlineStyle}
       />
       <Mapbox.LineLayer
         filter={['all', ['==', ['get', 'isMine'], false], ['==', ['get', 'isConflicting'], true]]}
         id={ONLINE_TERRITORIES_CONFLICT_OTHER_OUTLINE_LAYER_ID}
-        style={{
-          ...onlineTerritoryConflictOutlineBaseStyle,
-          lineColor: conflictStyle.color,
-          lineOpacity: conflictStyle.territoryOpacityBoost,
-          lineWidth: onlineTerritoryOtherOutlineStyle.lineWidth + conflictStyle.territoryLineWidthBoost,
-        }}
+        style={conflictOtherOutlineStyle}
       />
     </Mapbox.ShapeSource>
   );
