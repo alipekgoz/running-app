@@ -33,7 +33,7 @@ export type CarvedTerritoryUpdate = {
   sourceRoutePointCount: number;
 };
 
-type TerritoryRow = {
+export type TerritoryRow = {
   area_hectare?: unknown;
   area_m2?: unknown;
   coordinates?: unknown;
@@ -70,7 +70,7 @@ function isCoordinate(value: unknown): value is Coordinates {
   );
 }
 
-function toOnlineTerritory(row: TerritoryRow): OnlineTerritory | null {
+export function parseOnlineTerritoryRow(row: TerritoryRow): OnlineTerritory | null {
   if (
     !isNonEmptyString(row.id) ||
     !Array.isArray(row.coordinates) ||
@@ -144,7 +144,7 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
 
     const rows = Array.isArray(data) ? (data as TerritoryRow[]) : [];
     const territories = rows
-      .map((row) => toOnlineTerritory(row))
+      .map((row) => parseOnlineTerritoryRow(row))
       .filter((territory): territory is OnlineTerritory => territory !== null);
 
     return {
@@ -178,7 +178,10 @@ export async function fetchTerritoriesForViewport(
 
   return {
     didApplyViewportFilter: true,
-    message: `Fetched ${baseResult.territories.length} online territories. Viewport filtered to ${filteredTerritories.length}.`,
+    message:
+      `Fetched ${baseResult.territories.length} online territories. ` +
+      `Viewport filtered to ${filteredTerritories.length}. ` +
+      'Spatial filtering is not configured server-side yet; client-side viewport filtering was applied.',
     success: true,
     territories: filteredTerritories,
   };
@@ -198,7 +201,10 @@ export async function uploadTerritory(
   }
 
   try {
-    const { error } = await supabase.from('territories').insert(toTerritoryInsertPayload(territory, playerId));
+    const { error } = await supabase.from('territories').upsert(
+      toTerritoryInsertPayload(territory, playerId),
+      { onConflict: 'id' },
+    );
 
     if (error) {
       return {
@@ -242,8 +248,9 @@ export async function uploadTerritories(
   }
 
   try {
-    const { error } = await supabase.from('territories').insert(
+    const { error } = await supabase.from('territories').upsert(
       territories.map((territory) => toTerritoryInsertPayload(territory, playerId)),
+      { onConflict: 'id' },
     );
 
     if (error) {

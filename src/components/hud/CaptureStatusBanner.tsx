@@ -52,10 +52,11 @@ const styles = StyleSheet.create({
     borderRadius: uiRadius.md,
     borderWidth: 1,
     left: uiSpacing.md,
+    maxWidth: 420,
     padding: uiSpacing.md,
     position: 'absolute',
     right: uiSpacing.md,
-    top: 88,
+    top: 76,
     zIndex: 26,
   },
   label: {

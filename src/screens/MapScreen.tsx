@@ -23,6 +23,7 @@ import type {
   OnlineTerritory,
   OverlapComparableTerritory,
   PlayerProfile,
+  TerritoryRealtimeEvent,
   TerritoryPreviewPayload,
   ViewportBounds,
 } from '../types';
@@ -37,10 +38,12 @@ import {
   loadSavedTerritories,
   saveSavedTerritories,
 } from '../services/territoryStorageService';
+import { subscribeToTerritoryRealtime } from '../services/territoryRealtimeService';
 import {
   fetchTerritoriesForViewport,
   isBackendConfigured,
   transferTerritoryOwnership,
+  uploadTerritory,
   uploadTerritories,
 } from '../services/territoryBackendService';
 import { CLAIM_RULE_CONFIG } from '../config/claimRulesConfig';
@@ -82,7 +85,7 @@ type AutoSaveBlockedReason =
   | 'claim_not_allowed'
   | 'claim_cooldown_active';
 
-type RefreshOnlineTerritoriesReason = 'manual' | 'startup' | 'capture' | 'carve' | 'sync';
+type RefreshOnlineTerritoriesReason = 'manual' | 'startup' | 'capture' | 'carve' | 'sync' | 'realtime' | 'auto_sync';
 
 type RenderTerritoryMetrics = {
   renderedSavedTerritories: LocalSavedTerritory[];
@@ -112,6 +115,7 @@ export function MapScreen() {
   const [territoriesStorageError, setTerritoriesStorageError] = useState<string | null>(null);
   const [lastSaveStatus, setLastSaveStatus] = useState('No save yet.');
   const [lastSyncStatus, setLastSyncStatus] = useState('No sync yet.');
+  const [locallySyncedTerritoryIds, setLocallySyncedTerritoryIds] = useState<string[]>([]);
   const [lastRejectedReason, setLastRejectedReason] = useState<string | null>(null);
   const [lastCooldownBlockReason, setLastCooldownBlockReason] = useState<CooldownReason>('none');
   const [lastCarveApplied, setLastCarveApplied] = useState(false);
@@ -131,6 +135,12 @@ export function MapScreen() {
   const [lastFetchStatus, setLastFetchStatus] = useState('No online fetch yet.');
   const [lastFetchReason, setLastFetchReason] = useState<RefreshOnlineTerritoriesReason | null>(null);
   const [lastFetchDurationMs, setLastFetchDurationMs] = useState<number | null>(null);
+  const [isRealtimeEnabled, setIsRealtimeEnabled] = useState(false);
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
+  const [lastRealtimeEventType, setLastRealtimeEventType] = useState<TerritoryRealtimeEvent['type'] | null>(null);
+  const [lastRealtimeTerritoryId, setLastRealtimeTerritoryId] = useState<string | null>(null);
+  const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState<string | null>(null);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const [capturePromptVisible, setCapturePromptVisible] = useState(false);
   const [captureStatusLabel, setCaptureStatusLabel] = useState<string | undefined>(undefined);
   const [captureStatusMessage, setCaptureStatusMessage] = useState<string | null>(null);
@@ -145,6 +155,12 @@ export function MapScreen() {
   const [debouncedViewportBounds, setDebouncedViewportBounds] = useState<ViewportBounds | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCameraViewportBoundsRef = useRef<ViewportBounds | null>(null);
+  const lastCameraViewportUpdateAtRef = useRef(0);
+  const realtimeFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeEventBufferRef = useRef<Map<string, TerritoryRealtimeEvent>>(new Map());
+  const realtimeFallbackRefreshPendingRef = useRef(false);
+  const pendingAutoSyncTerritoryIdsRef = useRef<Set<string>>(new Set());
   const saveTerritoryRef = useRef<((trigger?: 'auto' | 'manual') => Promise<SaveResult>) | null>(null);
   const routeGeoJSON = useMemo(() => routeToGeoJSON(routePoints), [routePoints]);
   const isRouteLineRendered = routeGeoJSON !== null;
@@ -180,6 +196,9 @@ export function MapScreen() {
       }),
     [currentLocation, initialZoomLevel],
   );
+  useEffect(() => {
+    lastCameraViewportBoundsRef.current = currentViewportBounds ?? fallbackViewportBounds;
+  }, [currentViewportBounds, fallbackViewportBounds]);
   const lastRoutePoint = routePoints.at(-1) ?? null;
   const lastSavedTerritory = savedTerritories.at(-1) ?? null;
   const territoryPreviewSignature = useMemo(
@@ -229,8 +248,8 @@ export function MapScreen() {
     [currentPlayerProfile?.playerId, onlineTerritoriesWithOwnership],
   );
   const unsyncedSavedTerritories = useMemo(
-    () => getUnsyncedSavedTerritories(savedTerritories, onlineTerritoriesWithOwnership),
-    [onlineTerritoriesWithOwnership, savedTerritories],
+    () => getUnsyncedSavedTerritories(savedTerritories, onlineTerritoriesWithOwnership, locallySyncedTerritoryIds),
+    [locallySyncedTerritoryIds, onlineTerritoriesWithOwnership, savedTerritories],
   );
   const displayOnlineTerritories = useMemo(
     () => getDisplayOnlineTerritories(onlineTerritoriesWithOwnership, savedTerritories),
@@ -342,7 +361,36 @@ export function MapScreen() {
   );
   const claimLabel = useMemo(() => formatClaimLabel(claimValidationResult), [claimValidationResult]);
   const handleMapCameraChanged = useCallback((state: MapCameraChangedEvent): void => {
-    const center = state.properties.center;
+    const center = state?.properties?.center;
+    const bounds = state?.properties?.bounds;
+    const zoomLevel = state?.properties?.zoom;
+
+    if (
+      !Array.isArray(center) ||
+      center.length < 2 ||
+      typeof center[0] !== 'number' ||
+      typeof center[1] !== 'number' ||
+      !Number.isFinite(center[0]) ||
+      !Number.isFinite(center[1]) ||
+      !bounds ||
+      !Array.isArray(bounds.ne) ||
+      !Array.isArray(bounds.sw) ||
+      bounds.ne.length < 2 ||
+      bounds.sw.length < 2 ||
+      typeof bounds.ne[0] !== 'number' ||
+      typeof bounds.ne[1] !== 'number' ||
+      typeof bounds.sw[0] !== 'number' ||
+      typeof bounds.sw[1] !== 'number' ||
+      !Number.isFinite(bounds.ne[0]) ||
+      !Number.isFinite(bounds.ne[1]) ||
+      !Number.isFinite(bounds.sw[0]) ||
+      !Number.isFinite(bounds.sw[1]) ||
+      typeof zoomLevel !== 'number' ||
+      !Number.isFinite(zoomLevel)
+    ) {
+      return;
+    }
+
     const nextViewportBounds = calculateViewportBounds({
       center: {
         latitude: center[1],
@@ -350,40 +398,30 @@ export function MapScreen() {
       },
       paddingRatio: PERFORMANCE_CONFIG.viewportPaddingRatio,
       visibleBounds: {
-        ne: [state.properties.bounds.ne[0], state.properties.bounds.ne[1]],
-        sw: [state.properties.bounds.sw[0], state.properties.bounds.sw[1]],
+        ne: [bounds.ne[0], bounds.ne[1]],
+        sw: [bounds.sw[0], bounds.sw[1]],
       },
-      zoomLevel: state.properties.zoom,
+      zoomLevel,
     });
+    const previousBounds = lastCameraViewportBoundsRef.current;
+    const now = Date.now();
 
-    setCurrentViewportBounds((previousBounds) => {
-      if (
-        previousBounds &&
-        previousBounds.east === nextViewportBounds.east &&
-        previousBounds.west === nextViewportBounds.west &&
-        previousBounds.north === nextViewportBounds.north &&
-        previousBounds.south === nextViewportBounds.south &&
-        previousBounds.zoomLevel === nextViewportBounds.zoomLevel
-      ) {
-        return previousBounds;
-      }
+    if (
+      previousBounds &&
+      !haveViewportBoundsChanged(previousBounds, nextViewportBounds)
+    ) {
+      return;
+    }
 
-      return nextViewportBounds;
-    });
+    if (now - lastCameraViewportUpdateAtRef.current < PERFORMANCE_CONFIG.cameraChangeThrottleMs) {
+      return;
+    }
+
+    lastCameraViewportBoundsRef.current = nextViewportBounds;
+    lastCameraViewportUpdateAtRef.current = now;
+    setCurrentViewportBounds(nextViewportBounds);
   }, []);
   const playerIdShort = useMemo(() => formatPlayerIdShort(currentPlayerProfile?.playerId ?? null), [currentPlayerProfile?.playerId]);
-  const playerCreatedAtLabel = useMemo(
-    () => formatDateTimeLabel(currentPlayerProfile?.createdAt ?? null),
-    [currentPlayerProfile?.createdAt],
-  );
-  const areaM2Label = useMemo(
-    () => formatAreaMetricValue(polygonAreaAnalysis.result?.areaM2 ?? null, 1, '0.0'),
-    [polygonAreaAnalysis.result?.areaM2],
-  );
-  const areaHectareLabel = useMemo(
-    () => formatAreaMetricValue(polygonAreaAnalysis.result?.areaHectare ?? null, 4, '0.0000'),
-    [polygonAreaAnalysis.result?.areaHectare],
-  );
   const gpsReady = currentLocation !== null && !locationError && isLocationServicesEnabled;
   const captureCoveragePercentLabel = useMemo(
     () => `${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
@@ -487,6 +525,12 @@ export function MapScreen() {
       `Rendered saved territories count: ${renderTerritoryMetrics.renderedSavedTerritories.length}`,
       `Last fetch reason: ${lastFetchReason ?? 'None'}`,
       `Last fetch duration ms: ${lastFetchDurationMs ?? 0}`,
+      `Realtime enabled: ${isRealtimeEnabled ? 'Yes' : 'No'}`,
+      `Realtime connected: ${isRealtimeConnected ? 'Yes' : 'No'}`,
+      `Last realtime event type: ${lastRealtimeEventType ?? 'None'}`,
+      `Last realtime territory id: ${lastRealtimeTerritoryId ?? 'None'}`,
+      `Last realtime event at: ${lastRealtimeEventAt ?? 'None'}`,
+      `Realtime error: ${realtimeError ?? 'None'}`,
       `Render simplification applied: ${renderTerritoryMetrics.simplificationApplied ? 'Yes' : 'No'}`,
       `Render polygon points before simplify: ${renderTerritoryMetrics.savedPointsBeforeSimplify}`,
       `Render polygon points after simplify: ${renderTerritoryMetrics.savedPointsAfterSimplify}`,
@@ -561,6 +605,8 @@ export function MapScreen() {
       isPlayerLoaded,
       isPlayerStorageValid,
       isCaptureProcessing,
+      isRealtimeConnected,
+      isRealtimeEnabled,
       isTracking,
       isRouteLineRendered,
       isSaveTerritoryEnabled,
@@ -578,6 +624,9 @@ export function MapScreen() {
       lastFetchDurationMs,
       lastFetchReason,
       lastFetchStatus,
+      lastRealtimeEventAt,
+      lastRealtimeEventType,
+      lastRealtimeTerritoryId,
       lastRejectedReason,
       lastRoutePoint,
       lastSaveStatus,
@@ -601,6 +650,7 @@ export function MapScreen() {
       hasCapturedCurrentRoute,
       playerIdentityStatus,
       playerIdShort,
+      realtimeError,
       claimValidationResult,
       conflictVisualizationState,
       polygonAnalysis,
@@ -626,6 +676,12 @@ export function MapScreen() {
     }
 
     setIsAutoSaveTimerActive(false);
+  }, []);
+  const clearRealtimeFlushTimer = useCallback((): void => {
+    if (realtimeFlushTimeoutRef.current) {
+      clearTimeout(realtimeFlushTimeoutRef.current);
+      realtimeFlushTimeoutRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -810,12 +866,33 @@ export function MapScreen() {
     void persistSavedTerritories();
   }, [savedTerritories, territoriesLoading]);
 
+  useEffect(() => {
+    const savedTerritoryIds = new Set(savedTerritories.map((territory) => territory.id));
+
+    setLocallySyncedTerritoryIds((previousIds) => previousIds.filter((territoryId) => savedTerritoryIds.has(territoryId)));
+  }, [savedTerritories]);
+
   const updateCooldownTimestamp = useCallback((key: keyof CooldownState, timestamp = new Date().toISOString()): void => {
     setCooldownState((previousState) => ({
       ...previousState,
       [key]: timestamp,
     }));
     setCooldownNowMs(Date.now());
+  }, []);
+  const markTerritoriesAsLocallySynced = useCallback((territoryIds: readonly string[]): void => {
+    if (territoryIds.length === 0) {
+      return;
+    }
+
+    setLocallySyncedTerritoryIds((previousIds) => {
+      const nextIds = new Set(previousIds);
+
+      for (const territoryId of territoryIds) {
+        nextIds.add(territoryId);
+      }
+
+      return [...nextIds];
+    });
   }, []);
 
   const refreshOnlineTerritories = useCallback(async (reason: RefreshOnlineTerritoriesReason): Promise<void> => {
@@ -881,6 +958,147 @@ export function MapScreen() {
     syncCooldown.remainingMs,
     updateCooldownTimestamp,
   ]);
+  const syncSingleTerritoryAfterSave = useCallback(async (
+    territory: LocalSavedTerritory,
+    trigger: 'auto' | 'manual',
+  ): Promise<void> => {
+    if (!backendConfigured) {
+      setLastSyncStatus(
+        trigger === 'auto'
+          ? 'Auto-sync skipped: backend config missing.'
+          : 'Sync skipped: backend config missing.',
+      );
+      return;
+    }
+
+    if (
+      locallySyncedTerritoryIds.includes(territory.id) ||
+      pendingAutoSyncTerritoryIdsRef.current.has(territory.id)
+    ) {
+      return;
+    }
+
+    pendingAutoSyncTerritoryIdsRef.current.add(territory.id);
+    setLastSyncStatus(trigger === 'auto' ? 'Auto-syncing saved territory...' : 'Syncing saved territory...');
+
+    try {
+      const result = await uploadTerritory(territory, currentPlayerProfile?.playerId ?? null);
+
+      if (!result.success) {
+        setLastSyncStatus(
+          trigger === 'auto'
+            ? `Auto-sync failed: ${result.message}. Local save kept.`
+            : `Sync failed: ${result.message}`,
+        );
+        return;
+      }
+
+      markTerritoriesAsLocallySynced([territory.id]);
+      setLastSyncStatus(trigger === 'auto' ? `Auto-sync complete: ${result.message}` : result.message);
+      setLastCooldownBlockReason('none');
+      await refreshOnlineTerritories(trigger === 'auto' ? 'auto_sync' : 'sync');
+    } finally {
+      pendingAutoSyncTerritoryIdsRef.current.delete(territory.id);
+    }
+  }, [
+    backendConfigured,
+    currentPlayerProfile?.playerId,
+    locallySyncedTerritoryIds,
+    markTerritoriesAsLocallySynced,
+    refreshOnlineTerritories,
+  ]);
+  const applyRealtimeEvents = useCallback((events: readonly TerritoryRealtimeEvent[]): void => {
+    if (events.length === 0) {
+      return;
+    }
+
+    setOnlineTerritories((previousTerritories) => {
+      const territoryMap = new Map(previousTerritories.map((territory) => [territory.id, territory]));
+
+      for (const event of events) {
+        if (event.type === 'DELETE') {
+          territoryMap.delete(event.territoryId);
+          continue;
+        }
+
+        if (!event.territory) {
+          continue;
+        }
+
+        territoryMap.set(event.territoryId, event.territory);
+      }
+
+      return [...territoryMap.values()].sort((leftTerritory, rightTerritory) =>
+        rightTerritory.createdAt.localeCompare(leftTerritory.createdAt),
+      );
+    });
+  }, []);
+  const flushRealtimeEvents = useCallback((): void => {
+    clearRealtimeFlushTimer();
+
+    const bufferedEvents = [...realtimeEventBufferRef.current.values()];
+    realtimeEventBufferRef.current.clear();
+
+    if (realtimeFallbackRefreshPendingRef.current) {
+      realtimeFallbackRefreshPendingRef.current = false;
+      void refreshOnlineTerritories('realtime');
+      return;
+    }
+
+    applyRealtimeEvents(bufferedEvents);
+  }, [applyRealtimeEvents, clearRealtimeFlushTimer, refreshOnlineTerritories]);
+  const handleRealtimeEvent = useCallback((event: TerritoryRealtimeEvent): void => {
+    setLastRealtimeEventType(event.type);
+    setLastRealtimeTerritoryId(event.territoryId);
+    setLastRealtimeEventAt(event.receivedAt);
+    setRealtimeError(null);
+
+    if ((event.type === 'INSERT' || event.type === 'UPDATE') && !event.territory) {
+      realtimeFallbackRefreshPendingRef.current = true;
+    } else {
+      realtimeEventBufferRef.current.set(event.territoryId, event);
+    }
+
+    if (realtimeEventBufferRef.current.size > PERFORMANCE_CONFIG.maxRealtimeEventsBuffered) {
+      realtimeEventBufferRef.current.clear();
+      realtimeFallbackRefreshPendingRef.current = true;
+    }
+
+    clearRealtimeFlushTimer();
+    realtimeFlushTimeoutRef.current = setTimeout(() => {
+      flushRealtimeEvents();
+    }, PERFORMANCE_CONFIG.realtimeDebounceMs);
+  }, [clearRealtimeFlushTimer, flushRealtimeEvents]);
+
+  useEffect(() => {
+    if (!backendConfigured) {
+      setIsRealtimeEnabled(false);
+      setIsRealtimeConnected(false);
+      setRealtimeError(null);
+      return;
+    }
+
+    const subscription = subscribeToTerritoryRealtime({
+      onConnectionChange: (connected) => {
+        setIsRealtimeConnected(connected);
+      },
+      onError: (message) => {
+        setRealtimeError(message);
+      },
+      onEvent: (event) => {
+        handleRealtimeEvent(event);
+      },
+    });
+
+    setIsRealtimeEnabled(subscription.enabled);
+
+    return () => {
+      clearRealtimeFlushTimer();
+      realtimeEventBufferRef.current.clear();
+      realtimeFallbackRefreshPendingRef.current = false;
+      void subscription.unsubscribe();
+    };
+  }, [backendConfigured, clearRealtimeFlushTimer, handleRealtimeEvent]);
 
   async function startTracking(): Promise<void> {
     if (!startStopCooldown.allowed) {
@@ -1017,6 +1235,8 @@ export function MapScreen() {
     try {
       setTerritoriesStorageError(null);
       await clearSavedTerritoriesFromStorage();
+      pendingAutoSyncTerritoryIdsRef.current.clear();
+      setLocallySyncedTerritoryIds([]);
       setSavedTerritories([]);
       setLastSaveStatus('Cleared saved territories.');
     } catch (error: unknown) {
@@ -1039,11 +1259,17 @@ export function MapScreen() {
       return;
     }
 
+    if (unsyncedSavedTerritories.length === 0) {
+      setLastSyncStatus('No local territories to sync.');
+      return;
+    }
+
     updateCooldownTimestamp('lastSyncAt');
     const result = await uploadTerritories(unsyncedSavedTerritories, currentPlayerProfile?.playerId ?? null);
 
     setLastSyncStatus(result.success ? result.message : `Sync failed: ${result.message}`);
     if (result.success) {
+      markTerritoriesAsLocallySynced(unsyncedSavedTerritories.map((territory) => territory.id));
       setLastCooldownBlockReason('none');
       await refreshOnlineTerritories('sync');
     }
@@ -1272,6 +1498,7 @@ export function MapScreen() {
         );
 
         if (backendResult.success) {
+          markTerritoriesAsLocallySynced([nextTerritory.id]);
           setCaptureStatusLabel('Territory captured');
           setCaptureStatusTone('success');
           setCaptureStatusMessage('Bölge ele geçirildi');
@@ -1311,6 +1538,7 @@ export function MapScreen() {
       );
 
       if (backendResult.success) {
+        markTerritoriesAsLocallySynced([nextTerritory.id]);
         setCaptureStatusLabel('Enemy territory reduced');
         setCaptureStatusTone('success');
         setCaptureStatusMessage('New territory claimed');
@@ -1332,6 +1560,9 @@ export function MapScreen() {
         territoryInteractionPlan.result.carvedTerritoryIds.length > 0 ? 'New territory claimed' : 'Bölgeniz kaydedildi',
       );
     }
+    if (territoryInteractionPlan.result.carvedTerritoryIds.length === 0) {
+      await syncSingleTerritoryAfterSave(nextTerritory, trigger);
+    }
     setLastSaveResultReason('saved');
     setLastSaveResultShouldAutoStop(trigger === 'auto');
     return {
@@ -1349,9 +1580,11 @@ export function MapScreen() {
     claimValidationResult,
     currentPlayerProfile?.playerId,
     enemyOnlineTerritories,
+    markTerritoriesAsLocallySynced,
     refreshOnlineTerritories,
     savedTerritories,
     showAutoSaveSuccessBanner,
+    syncSingleTerritoryAfterSave,
     territoryPreviewPayload,
     territoryPreviewSignature,
     updateCooldownTimestamp,
@@ -1493,8 +1726,6 @@ export function MapScreen() {
         </View>
       ) : null}
       <GameHUD
-        areaHectareLabel={areaHectareLabel}
-        areaM2Label={areaM2Label}
         backendConfigured={backendConfigured}
         canFetchOnlineTerritories={canFetchOnlineTerritories}
         canStartTracking={canStartTracking}
@@ -1535,12 +1766,7 @@ export function MapScreen() {
         onToggleDebug={() => {
           setIsDebugPanelExpanded((previousValue) => !previousValue);
         }}
-        playerCreatedAt={playerCreatedAtLabel}
         playerIdShort={playerIdShort}
-        playerLoaded={isPlayerLoaded}
-        playerStorageValid={isPlayerStorageValid}
-        savedTerritoryCount={savedTerritories.length}
-        syncStatus={lastSyncStatus}
         trackingActive={isTracking}
       />
     </View>
@@ -1577,6 +1803,30 @@ function isDuplicateTerritoryByTolerance(
   return (
     areaDifference <= COOLDOWN_CONFIG.duplicateAreaToleranceM2 &&
     pointDifference <= COOLDOWN_CONFIG.duplicatePointCountTolerance
+  );
+}
+
+function hasMeaningfulNumberDelta(previousValue: number, nextValue: number, epsilon: number): boolean {
+  return Math.abs(previousValue - nextValue) > epsilon;
+}
+
+function haveViewportBoundsChanged(previousBounds: ViewportBounds, nextBounds: ViewportBounds): boolean {
+  return (
+    hasMeaningfulNumberDelta(
+      previousBounds.center.latitude,
+      nextBounds.center.latitude,
+      PERFORMANCE_CONFIG.viewportCenterEpsilon,
+    ) ||
+    hasMeaningfulNumberDelta(
+      previousBounds.center.longitude,
+      nextBounds.center.longitude,
+      PERFORMANCE_CONFIG.viewportCenterEpsilon,
+    ) ||
+    hasMeaningfulNumberDelta(previousBounds.north, nextBounds.north, PERFORMANCE_CONFIG.viewportBoundsEpsilon) ||
+    hasMeaningfulNumberDelta(previousBounds.south, nextBounds.south, PERFORMANCE_CONFIG.viewportBoundsEpsilon) ||
+    hasMeaningfulNumberDelta(previousBounds.east, nextBounds.east, PERFORMANCE_CONFIG.viewportBoundsEpsilon) ||
+    hasMeaningfulNumberDelta(previousBounds.west, nextBounds.west, PERFORMANCE_CONFIG.viewportBoundsEpsilon) ||
+    hasMeaningfulNumberDelta(previousBounds.zoomLevel, nextBounds.zoomLevel, PERFORMANCE_CONFIG.viewportZoomEpsilon)
   );
 }
 
@@ -1685,7 +1935,9 @@ function getTerritoryGeometrySignature(coordinates: readonly Coordinates[]): str
 function getUnsyncedSavedTerritories(
   savedTerritories: readonly LocalSavedTerritory[],
   onlineTerritories: readonly OnlineTerritory[],
+  locallySyncedTerritoryIds: readonly string[],
 ): LocalSavedTerritory[] {
+  const locallySyncedTerritoryIdSet = new Set(locallySyncedTerritoryIds);
   const syncedGeometrySignatures = new Set(
     onlineTerritories
       .filter((territory) => territory.isMine === true)
@@ -1693,7 +1945,9 @@ function getUnsyncedSavedTerritories(
   );
 
   return savedTerritories.filter(
-    (territory) => !syncedGeometrySignatures.has(getTerritoryGeometrySignature(territory.coordinates)),
+    (territory) =>
+      !locallySyncedTerritoryIdSet.has(territory.id) &&
+      !syncedGeometrySignatures.has(getTerritoryGeometrySignature(territory.coordinates)),
   );
 }
 
@@ -1740,14 +1994,6 @@ function formatBoundingBoxDebugText(
     `${polygonAnalysis.boundingBox.maxLatitude.toFixed(5)}, ${polygonAnalysis.boundingBox.maxLongitude.toFixed(5)}`,
     `${formatMeters(polygonAnalysis.boundingBoxWidthMeters)} x ${formatMeters(polygonAnalysis.boundingBoxHeightMeters)}`,
   ].join(' -> ');
-}
-
-function formatAreaMetricValue(value: number | null, fractionDigits: number, fallback: string): string {
-  if (value == null || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return value.toFixed(fractionDigits);
 }
 
 function formatConflictLabel(severity: 'none' | 'low' | 'medium' | 'high'): string {
@@ -1820,23 +2066,6 @@ function formatPlayerIdShort(playerId: string | null): string {
   }
 
   return `Player ${playerId.slice(0, 8)}`;
-}
-
-function formatDateTimeLabel(value: string | null): string {
-  if (!value) {
-    return 'Unavailable';
-  }
-
-  const parsedDate = new Date(value);
-
-  if (Number.isNaN(parsedDate.getTime())) {
-    return value;
-  }
-
-  return parsedDate.toLocaleDateString('en-US', {
-    day: '2-digit',
-    month: 'short',
-  });
 }
 
 function formatCoordinateLabel(lastRoutePoint: GpsPoint | null, currentLocation: Coordinates | null): string {

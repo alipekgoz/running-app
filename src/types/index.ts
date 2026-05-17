@@ -6,6 +6,7 @@ import type { ConflictSeverity, ConflictVisualizationState } from './conflict';
 import type { CooldownCheckResult, CooldownReason, CooldownState } from './cooldown';
 import type { LocalSavedTerritory, OnlineTerritory, TerritoryPreviewPayload, ViewportBounds } from './territory';
 import type { OverlapComparableTerritory, TerritoryOverlapAnalysis } from './overlap';
+import type { TerritoryRealtimeEvent, TerritoryRealtimeEventType } from './realtime';
 
 export type { Coordinates } from './location';
 export type { ClaimRejectReason, ClaimValidationResult, TerritoryCaptureResult } from './claim';
@@ -15,6 +16,7 @@ export type { ConflictSeverity, ConflictVisualizationState } from './conflict';
 export type { CooldownCheckResult, CooldownReason, CooldownState } from './cooldown';
 export type { LocalSavedTerritory, OnlineTerritory, TerritoryPreviewPayload, ViewportBounds } from './territory';
 export type { OverlapComparableTerritory, TerritoryOverlapAnalysis } from './overlap';
+export type { TerritoryRealtimeEvent, TerritoryRealtimeEventType } from './realtime';
 
 export type GpsPoint = Coordinates & {
   accuracyMeters: number;

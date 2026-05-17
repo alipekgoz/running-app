@@ -25,7 +25,10 @@ function DebugOverlayComponent({
   return (
     <View style={styles.container}>
       <Pressable onPress={onToggle} style={({ pressed }) => [styles.header, pressed ? styles.pressed : null]}>
-        <Text style={styles.title}>Debug</Text>
+        <View>
+          <Text style={styles.title}>Debug</Text>
+          <Text style={styles.subtitle}>Telemetry and diagnostics</Text>
+        </View>
         <Text style={styles.toggle}>{expanded ? 'Hide' : 'Show'}</Text>
       </Pressable>
       {expanded ? (
@@ -97,6 +100,7 @@ const styles = StyleSheet.create({
   content: {
     paddingBottom: uiSpacing.md,
     paddingHorizontal: uiSpacing.md,
+    paddingTop: uiSpacing.xs,
   },
   header: {
     alignItems: 'center',
@@ -118,6 +122,11 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
+  },
+  subtitle: {
+    color: uiColors.secondaryText,
+    fontSize: uiTypography.caption,
+    marginTop: 2,
   },
   title: {
     color: uiColors.primaryText,

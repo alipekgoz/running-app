@@ -100,7 +100,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   wrapper: {
-    bottom: uiHud.bottomInsetPadding + 140,
+    bottom: uiHud.bottomInsetPadding + 108,
     left: uiSpacing.md,
     position: 'absolute',
     right: uiSpacing.md,

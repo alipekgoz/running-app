@@ -101,6 +101,7 @@ const styles = StyleSheet.create({
     borderRadius: uiRadius.chip,
     borderWidth: 1,
     flex: 1,
+    minWidth: 0,
     height: uiHud.compactButtonHeight,
     justifyContent: 'center',
   },
@@ -143,6 +144,7 @@ const styles = StyleSheet.create({
   },
   utilityRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: uiSpacing.sm,
   },
 });

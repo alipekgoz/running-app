@@ -4,73 +4,45 @@ import { uiColors, uiRadius, uiSpacing, uiTypography } from '../../config/uiConf
 import type { ConflictSeverity } from '../../types';
 
 type TerritoryStatsCardProps = {
-  areaHectareLabel: string;
-  areaM2Label: string;
   claimLabel: string;
   claimSeverity: ConflictSeverity;
   conflictLabel: string;
   conflictSeverity: ConflictSeverity;
-  savedTerritoryCount: number;
-  syncStatus: string;
   trackingStateLabel: 'Idle' | 'Tracking';
 };
 
 function TerritoryStatsCardComponent({
-  areaHectareLabel,
-  areaM2Label,
   claimLabel,
   claimSeverity,
   conflictLabel,
   conflictSeverity,
-  savedTerritoryCount,
-  syncStatus,
   trackingStateLabel,
 }: TerritoryStatsCardProps) {
   return (
     <View style={styles.card}>
       <Text style={styles.kicker}>Territory</Text>
-      <View style={styles.metricRow}>
-        <View style={styles.metricBlock}>
-          <Text style={styles.metricValue}>{areaM2Label}</Text>
-          <Text style={styles.metricLabel}>Area m²</Text>
-        </View>
-        <View style={styles.metricBlock}>
-          <Text style={styles.metricValue}>{areaHectareLabel}</Text>
-          <Text style={styles.metricLabel}>Hectare</Text>
-        </View>
-      </View>
-      <View style={styles.footerRow}>
-        <View>
-          <Text style={styles.footerLabel}>Saved</Text>
-          <Text style={styles.footerValue}>{savedTerritoryCount}</Text>
-        </View>
-        <View>
-          <Text style={styles.footerLabel}>State</Text>
-          <Text style={[styles.footerValue, trackingStateLabel === 'Tracking' ? styles.trackingOn : null]}>
+      <View style={styles.metricGrid}>
+        <View style={styles.metricItem}>
+          <Text style={styles.metricLabel}>State</Text>
+          <Text style={[styles.metricValue, trackingStateLabel === 'Tracking' ? styles.trackingOn : null]}>
             {trackingStateLabel}
           </Text>
         </View>
-        <View style={styles.conflictBlock}>
-          <Text style={styles.footerLabel}>Claim</Text>
+        <View style={styles.metricItem}>
+          <Text style={styles.metricLabel}>Claim</Text>
           <View style={[styles.conflictBadge, getConflictBadgeStyle(claimSeverity)]}>
             <Text numberOfLines={1} style={styles.conflictBadgeText}>
               {claimLabel}
             </Text>
           </View>
         </View>
-        <View style={styles.conflictBlock}>
-          <Text style={styles.footerLabel}>Conflict</Text>
+        <View style={styles.metricItem}>
+          <Text style={styles.metricLabel}>Conflict</Text>
           <View style={[styles.conflictBadge, getConflictBadgeStyle(conflictSeverity)]}>
             <Text numberOfLines={1} style={styles.conflictBadgeText}>
               {conflictLabel}
             </Text>
           </View>
-        </View>
-        <View style={styles.syncBlock}>
-          <Text style={styles.footerLabel}>Sync</Text>
-          <Text numberOfLines={1} style={styles.syncValue}>
-            {syncStatus}
-          </Text>
         </View>
       </View>
     </View>
@@ -83,40 +55,22 @@ const styles = StyleSheet.create({
     borderColor: uiColors.cardBorder,
     borderRadius: uiRadius.card,
     borderWidth: 1,
-    padding: uiSpacing.lg,
+    maxWidth: 340,
+    paddingHorizontal: uiSpacing.md,
+    paddingVertical: uiSpacing.sm,
   },
   conflictBadge: {
     borderRadius: uiRadius.chip,
     borderWidth: 1,
     marginTop: uiSpacing.xs,
+    minHeight: 30,
     paddingHorizontal: uiSpacing.sm,
-    paddingVertical: uiSpacing.xs,
+    paddingVertical: 6,
   },
   conflictBadgeText: {
     color: uiColors.primaryText,
     fontSize: uiTypography.caption,
     fontWeight: '700',
-  },
-  conflictBlock: {
-    minWidth: 104,
-  },
-  footerLabel: {
-    color: uiColors.secondaryText,
-    fontSize: uiTypography.caption,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
-  },
-  footerRow: {
-    alignItems: 'flex-end',
-    flexDirection: 'row',
-    gap: uiSpacing.lg,
-    marginTop: uiSpacing.md,
-  },
-  footerValue: {
-    color: uiColors.primaryText,
-    fontSize: uiTypography.body,
-    fontWeight: '600',
-    marginTop: uiSpacing.xs,
   },
   kicker: {
     color: uiColors.secondaryText,
@@ -124,32 +78,26 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
-  metricBlock: {
-    flex: 1,
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: uiSpacing.sm,
+    marginTop: uiSpacing.sm,
+  },
+  metricItem: {
+    minWidth: 88,
   },
   metricLabel: {
     color: uiColors.secondaryText,
-    fontSize: uiTypography.label,
+    fontSize: uiTypography.caption,
+    letterSpacing: 0.3,
     marginTop: uiSpacing.xs,
-  },
-  metricRow: {
-    flexDirection: 'row',
-    gap: uiSpacing.md,
-    marginTop: uiSpacing.sm,
+    textTransform: 'uppercase',
   },
   metricValue: {
     color: uiColors.primaryText,
-    fontSize: uiTypography.metric,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-  },
-  syncBlock: {
-    flex: 1,
-  },
-  syncValue: {
-    color: uiColors.primaryText,
     fontSize: uiTypography.body,
-    fontWeight: '600',
+    fontWeight: '700',
     marginTop: uiSpacing.xs,
   },
   trackingOn: {

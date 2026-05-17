@@ -4,14 +4,11 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { uiHud, uiSpacing } from '../../config/uiConfig';
 import type { ConflictSeverity } from '../../types';
 import { DebugOverlay } from './DebugOverlay';
-import { PlayerIdentityCard } from './PlayerIdentityCard';
 import { TerritoryStatsCard } from './TerritoryStatsCard';
 import { TopStatusBar } from './TopStatusBar';
 import { TrackingControls } from './TrackingControls';
 
 type GameHUDProps = {
-  areaHectareLabel: string;
-  areaM2Label: string;
   backendConfigured: boolean;
   canFetchOnlineTerritories: boolean;
   canStartTracking: boolean;
@@ -33,12 +30,7 @@ type GameHUDProps = {
   onStopTracking: () => void;
   onSyncTerritories: () => void;
   onToggleDebug: () => void;
-  playerCreatedAt: string;
   playerIdShort: string;
-  playerLoaded: boolean;
-  playerStorageValid: boolean;
-  savedTerritoryCount: number;
-  syncStatus: string;
   trackingActive: boolean;
 };
 
@@ -66,21 +58,11 @@ function GameHUDComponent(props: GameHUDProps) {
         />
         <View pointerEvents="box-none" style={styles.middleCluster}>
           <TerritoryStatsCard
-            areaHectareLabel={props.areaHectareLabel}
-            areaM2Label={props.areaM2Label}
             claimLabel={props.claimLabel}
             claimSeverity={props.claimSeverity}
             conflictLabel={props.conflictLabel}
             conflictSeverity={props.conflictSeverity}
-            savedTerritoryCount={props.savedTerritoryCount}
-            syncStatus={props.syncStatus}
             trackingStateLabel={trackingStateLabel}
-          />
-          <PlayerIdentityCard
-            playerCreatedAt={props.playerCreatedAt}
-            playerIdShort={props.playerIdShort}
-            playerLoaded={props.playerLoaded}
-            playerStorageValid={props.playerStorageValid}
           />
         </View>
         <View pointerEvents="box-none" style={styles.bottomCluster}>
@@ -119,15 +101,12 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    gap: uiSpacing.md,
+    gap: uiSpacing.sm,
     paddingHorizontal: uiSpacing.md,
   },
   middleCluster: {
     alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: uiSpacing.sm,
-    justifyContent: 'space-between',
-    marginTop: uiSpacing.sm,
+    marginTop: uiSpacing.xs,
   },
   safeArea: {
     ...StyleSheet.absoluteFillObject,
