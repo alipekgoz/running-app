@@ -22,6 +22,7 @@ export type CarvedTerritoryUpdate = {
 
 export type TerritoryInteractionPlan = {
   carvedTerritories: CarvedTerritoryUpdate[];
+  enemyOverlapTargetIds: string[];
   fullCaptureApplied: boolean;
   geometryValid: boolean;
   maxEnemyCoveragePercent: number;
@@ -55,6 +56,10 @@ function getPreviousOwnerIds(territories: readonly OnlineTerritory[]): string[] 
   return [...new Set(territories.map((territory) => territory.deviceId).filter((ownerId): ownerId is string => ownerId != null))];
 }
 
+function isEnemyTerritory(territory: OnlineTerritory): boolean {
+  return territory.isMine !== true && territory.deviceId != null;
+}
+
 export function executeTerritoryCapture(
   territoryPreviewPayload: TerritoryPreviewPayload | null,
   onlineTerritories: readonly OnlineTerritory[],
@@ -65,6 +70,7 @@ export function executeTerritoryCapture(
   if (!territoryPreviewPayload || !isInteractionAllowed(claimValidationResult, territoryPreviewPayload.coordinates)) {
     return {
       carvedTerritories: [],
+      enemyOverlapTargetIds: [],
       fullCaptureApplied: false,
       geometryValid: false,
       maxEnemyCoveragePercent: 0,
@@ -83,7 +89,7 @@ export function executeTerritoryCapture(
 
   const validPreviewCoordinates = filterValidCoordinates(territoryPreviewPayload.coordinates);
   const overlappingEnemyTerritories = onlineTerritories.filter((territory) => {
-    if (territory.isMine === true || territory.deviceId == null) {
+    if (!isEnemyTerritory(territory)) {
       return false;
     }
 
@@ -149,6 +155,7 @@ export function executeTerritoryCapture(
 
   return {
     carvedTerritories,
+    enemyOverlapTargetIds: overlappingEnemyTerritories.map((territory) => territory.id),
     fullCaptureApplied: didCapture,
     geometryValid,
     maxEnemyCoveragePercent,

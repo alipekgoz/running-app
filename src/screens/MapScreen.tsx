@@ -359,6 +359,10 @@ export function MapScreen() {
       territoryPreviewPayload?.coordinates,
     ],
   );
+  const territoryInteractionPlan = useMemo(
+    () => executeTerritoryCapture(territoryPreviewPayload, enemyOnlineTerritories, claimValidationResult),
+    [claimValidationResult, enemyOnlineTerritories, territoryPreviewPayload],
+  );
   const claimLabel = useMemo(() => formatClaimLabel(claimValidationResult), [claimValidationResult]);
   const handleMapCameraChanged = useCallback((state: MapCameraChangedEvent): void => {
     const center = state?.properties?.center;
@@ -541,6 +545,8 @@ export function MapScreen() {
       `Overlapping others count: ${territoryOverlapAnalysis.overlappingOthersCount}`,
       `Estimated overlap percent: ${territoryOverlapAnalysis.estimatedOverlapPercent.toFixed(1)}%`,
       `Overlapping territory ids count: ${territoryOverlapAnalysis.overlappingTerritoryIds.length}`,
+      `Own overlap count: ${territoryOverlapAnalysis.overlappingMineCount}`,
+      `Enemy carve target count: ${territoryInteractionPlan.enemyOverlapTargetIds.length}`,
       `Conflict severity: ${conflictVisualizationState.severity}`,
       `Overlap percent rounded: ${Math.round(conflictVisualizationState.overlapPercent)}%`,
       `Overlaps mine: ${conflictVisualizationState.overlapsMine ? 'Yes' : 'No'}`,
@@ -565,6 +571,7 @@ export function MapScreen() {
       `Capture telemetry enemy coverage: ${claimValidationResult.estimatedEnemyCoveragePercent.toFixed(1)}%`,
       `Carve applied: ${lastCarveApplied ? 'Yes' : 'No'}`,
       `Full capture applied: ${lastFullCaptureApplied ? 'Yes' : 'No'}`,
+      `Carved enemy ids count: ${lastCarvedTerritoryIds.length}`,
       `Carved territory ids: ${lastCarvedTerritoryIds.length > 0 ? lastCarvedTerritoryIds.join(', ') : 'None'}`,
       `Resulting geometry valid: ${lastResultingGeometryValid ? 'Yes' : 'No'}`,
       `Claim overlap percent: ${claimValidationResult.overlapPercent.toFixed(1)}%`,
@@ -663,6 +670,7 @@ export function MapScreen() {
       supabaseConfigStatus.isConfigured,
       syncCooldown.remainingMs,
       territoryOverlapAnalysis,
+      territoryInteractionPlan.enemyOverlapTargetIds.length,
       territoryPreviewPayload,
       territoriesStorageError,
       unsyncedSavedTerritories.length,
@@ -1331,11 +1339,7 @@ export function MapScreen() {
       return;
     }
 
-    const captureOperation = executeTerritoryCapture(
-      territoryPreviewPayload,
-      enemyOnlineTerritories,
-      claimValidationResult,
-    );
+    const captureOperation = territoryInteractionPlan;
 
     if (!captureOperation.result.didCapture) {
       setLastSaveResultReason('failed');
@@ -1449,11 +1453,6 @@ export function MapScreen() {
       return { reason: 'duplicate', saved: false, shouldAutoStop: false };
     }
 
-    const territoryInteractionPlan = executeTerritoryCapture(
-      territoryPreviewPayload,
-      enemyOnlineTerritories,
-      claimValidationResult,
-    );
     const didFullCapture =
       claimValidationResult.isCaptureAllowed &&
       territoryInteractionPlan.result.didCapture &&
@@ -1579,12 +1578,12 @@ export function MapScreen() {
     claimCooldown.remainingMs,
     claimValidationResult,
     currentPlayerProfile?.playerId,
-    enemyOnlineTerritories,
     markTerritoriesAsLocallySynced,
     refreshOnlineTerritories,
     savedTerritories,
     showAutoSaveSuccessBanner,
     syncSingleTerritoryAfterSave,
+    territoryInteractionPlan,
     territoryPreviewPayload,
     territoryPreviewSignature,
     updateCooldownTimestamp,
