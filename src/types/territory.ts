@@ -24,6 +24,7 @@ export type OnlineTerritory = {
   sourceRoutePointCount: number;
   syncStatus: string;
   updatedAt: string;
+  userId?: string | null;
 };
 
 export type ViewportBounds = {

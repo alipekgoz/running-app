@@ -1,4 +1,5 @@
 import Mapbox from '@rnmapbox/maps';
+import type { User } from '@supabase/supabase-js';
 import * as Location from 'expo-location';
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Dimensions, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -15,6 +16,7 @@ import { SavedTerritoriesLayer } from '../components/map/SavedTerritoriesLayer';
 import { DEFAULT_MAP_CENTER, MAPBOX_ACCESS_TOKEN, MAPBOX_STYLE_URL } from '../config/mapboxConfig';
 import { uiColors, uiRadius, uiSpacing, uiTypography } from '../config/uiConfig';
 import type {
+  AuthState,
   CooldownReason,
   CooldownState,
   Coordinates,
@@ -29,10 +31,22 @@ import type {
 } from '../types';
 import { getSupabaseConfigStatus } from '../config/supabaseConfig';
 import {
+  getCurrentSession,
+  onAuthStateChange,
+  signInWithEmail,
+  signOut,
+  signUpWithEmail,
+} from '../services/authService';
+import {
   clearPlayerIdentity,
   loadOrCreatePlayerProfile,
   wasPlayerStorageValid,
 } from '../services/playerIdentityService';
+import {
+  createOrUpdateRemoteProfile,
+  linkAnonymousProfileToUser,
+  updateLocalPlayerProfile,
+} from '../services/profileService';
 import {
   clearSavedTerritories as clearSavedTerritoriesFromStorage,
   loadSavedTerritories,
@@ -98,6 +112,25 @@ type RenderTerritoryMetrics = {
 };
 
 type MapCameraChangedEvent = Parameters<NonNullable<ComponentProps<typeof Mapbox.MapView>['onCameraChanged']>>[0];
+type EffectiveOwnerMode = 'auth' | 'device';
+type EffectiveOwnerContext = {
+  authUserId: string | null;
+  effectiveOwnerId: string | null;
+  mode: EffectiveOwnerMode;
+  playerId: string | null;
+};
+
+const INITIAL_AUTH_STATE: AuthState = {
+  email: null,
+  error: null,
+  isAuthenticated: false,
+  loading: true,
+  userId: null,
+};
+
+function normalizeAuthInput(value: string): string {
+  return value.trim();
+}
 
 export function MapScreen() {
   const autoSaveSuccessBannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,6 +162,9 @@ export function MapScreen() {
   const [isPlayerLoaded, setIsPlayerLoaded] = useState(false);
   const [isPlayerStorageValid, setIsPlayerStorageValid] = useState(true);
   const [playerIdentityStatus, setPlayerIdentityStatus] = useState('Player identity not loaded yet.');
+  const [authState, setAuthState] = useState<AuthState>(INITIAL_AUTH_STATE);
+  const [authEmailInput, setAuthEmailInput] = useState('');
+  const [authPasswordInput, setAuthPasswordInput] = useState('');
   const [onlineTerritories, setOnlineTerritories] = useState<OnlineTerritory[]>([]);
   const [onlineTerritoriesLoading, setOnlineTerritoriesLoading] = useState(false);
   const [onlineTerritoriesError, setOnlineTerritoriesError] = useState<string | null>(null);
@@ -210,6 +246,14 @@ export function MapScreen() {
   );
   const supabaseConfigStatus = useMemo(() => getSupabaseConfigStatus(), []);
   const backendConfigured = isBackendConfigured();
+  const currentAuthUserId = authState.userId;
+  const currentDevicePlayerId = currentPlayerProfile?.playerId ?? null;
+  const currentProfileUserId = currentPlayerProfile?.userId ?? null;
+  const currentEmail = currentPlayerProfile?.email ?? authState.email;
+  const effectiveOwnerContext = useMemo(
+    () => getEffectiveOwnerContext(currentAuthUserId, currentDevicePlayerId),
+    [currentAuthUserId, currentDevicePlayerId],
+  );
   const claimCooldown = useMemo(
     () => checkCooldown('claim', cooldownState, cooldownNowMs),
     [cooldownNowMs, cooldownState],
@@ -230,22 +274,13 @@ export function MapScreen() {
     () =>
       onlineTerritories.map((territory) => ({
         ...territory,
-        isMine:
-          currentPlayerProfile?.playerId != null &&
-          territory.deviceId != null &&
-          territory.deviceId === currentPlayerProfile.playerId,
+        isMine: isOnlineTerritoryMine(territory, effectiveOwnerContext),
       })),
-    [currentPlayerProfile?.playerId, onlineTerritories],
+    [effectiveOwnerContext, onlineTerritories],
   );
   const enemyOnlineTerritories = useMemo(
-    () =>
-      onlineTerritoriesWithOwnership.filter(
-        (territory) =>
-          territory.deviceId != null &&
-          currentPlayerProfile?.playerId != null &&
-          territory.deviceId !== currentPlayerProfile.playerId,
-      ),
-    [currentPlayerProfile?.playerId, onlineTerritoriesWithOwnership],
+    () => onlineTerritoriesWithOwnership.filter((territory) => territory.isMine !== true),
+    [onlineTerritoriesWithOwnership],
   );
   const unsyncedSavedTerritories = useMemo(
     () => getUnsyncedSavedTerritories(savedTerritories, onlineTerritoriesWithOwnership, locallySyncedTerritoryIds),
@@ -320,13 +355,9 @@ export function MapScreen() {
   const overlapComparableOnlineTerritories = useMemo(
     () =>
       onlineTerritoriesWithOwnership.filter(
-        (territory) =>
-          territory.isMine === true ||
-          (territory.deviceId != null &&
-            currentPlayerProfile?.playerId != null &&
-            territory.deviceId !== currentPlayerProfile.playerId),
+        (territory) => territory.isMine === true || territory.userId != null || territory.deviceId != null,
       ),
-    [currentPlayerProfile?.playerId, onlineTerritoriesWithOwnership],
+    [onlineTerritoriesWithOwnership],
   );
   const overlapComparableTerritories = useMemo(
     () => buildOverlapComparableTerritories(overlapComparableOnlineTerritories, savedTerritories),
@@ -584,9 +615,23 @@ export function MapScreen() {
       `Last fetch status: ${lastFetchStatus}`,
       `Fetch error: ${onlineTerritoriesError ?? 'None'}`,
       `Backend configured: ${backendConfigured ? 'Yes' : 'No'}`,
+      `Auth configured: ${supabaseConfigStatus.isConfigured ? 'Yes' : 'No'}`,
+      `Auth authenticated: ${authState.isAuthenticated ? 'Yes' : 'No'}`,
+      `Auth loading: ${authState.loading ? 'Yes' : 'No'}`,
+      `Auth error: ${authState.error ?? 'None'}`,
+      `Auth user id: ${authState.userId ?? 'None'}`,
+      `Auth email: ${authState.email ?? 'None'}`,
+      `Effective owner mode: ${effectiveOwnerContext.mode}`,
+      `Effective owner id: ${effectiveOwnerContext.effectiveOwnerId ?? 'None'}`,
       `Current player short id: ${playerIdShort}`,
       `Storage error: ${territoriesStorageError ?? 'None'}`,
-      `Current player id: ${currentPlayerProfile?.playerId ?? 'Unavailable'}`,
+      `Current device player id: ${currentDevicePlayerId ?? 'Unavailable'}`,
+      `Current auth user id: ${currentAuthUserId ?? 'Unavailable'}`,
+      `Current profile user id: ${currentProfileUserId ?? 'Unavailable'}`,
+      `Current profile email: ${currentEmail ?? 'Unavailable'}`,
+      `Profile username: ${currentPlayerProfile?.username ?? 'Unavailable'}`,
+      `Profile display name: ${currentPlayerProfile?.displayName ?? 'Unavailable'}`,
+      `Profile is anonymous: ${currentPlayerProfile?.isAnonymous == null ? 'Unavailable' : currentPlayerProfile.isAnonymous ? 'Yes' : 'No'}`,
       `Player loaded: ${isPlayerLoaded ? 'Yes' : 'No'}`,
       `Player created at: ${currentPlayerProfile?.createdAt ?? 'Unavailable'}`,
       `Player last seen at: ${currentPlayerProfile?.lastSeenAt ?? 'Unavailable'}`,
@@ -605,9 +650,15 @@ export function MapScreen() {
       `Last rejected reason: ${lastRejectedReason ?? 'None'}`,
     ],
     [
+      authState,
       currentLocation,
       currentPlayerProfile,
+      currentAuthUserId,
+      currentDevicePlayerId,
+      currentEmail,
+      currentProfileUserId,
       backendConfigured,
+      effectiveOwnerContext,
       capturePromptSignature,
       isPlayerLoaded,
       isPlayerStorageValid,
@@ -676,6 +727,88 @@ export function MapScreen() {
       unsyncedSavedTerritories.length,
     ],
   );
+
+  useEffect(() => {
+    async function syncProfileForAuthUser(user: User | null): Promise<void> {
+      if (!user) {
+        const anonymousProfile = await updateLocalPlayerProfile({
+          email: null,
+          isAnonymous: true,
+          userId: null,
+        });
+
+        setCurrentPlayerProfile(anonymousProfile);
+        return;
+      }
+
+      const linkedProfile = await linkAnonymousProfileToUser(user.id);
+      const hydratedProfile = await updateLocalPlayerProfile({
+        email: user.email ?? linkedProfile.email ?? null,
+        isAnonymous: false,
+        userId: user.id,
+      });
+
+      setCurrentPlayerProfile(hydratedProfile);
+
+      const remoteResult = await createOrUpdateRemoteProfile(hydratedProfile);
+
+      if (!remoteResult.success && remoteResult.error) {
+        setAuthState((previousState) => ({
+          ...previousState,
+          error: previousState.error ?? `Profile sync: ${remoteResult.error}`,
+        }));
+      } else {
+        setCurrentPlayerProfile(remoteResult.profile);
+      }
+    }
+
+    async function hydrateAuthState(): Promise<void> {
+      try {
+        const session = await getCurrentSession();
+        const user = session?.user ?? null;
+
+        setAuthState({
+          email: user?.email ?? null,
+          error: null,
+          isAuthenticated: user != null,
+          loading: false,
+          userId: user?.id ?? null,
+        });
+
+        await syncProfileForAuthUser(user);
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown auth hydrate error';
+
+        setAuthState({
+          email: null,
+          error: errorMessage,
+          isAuthenticated: false,
+          loading: false,
+          userId: null,
+        });
+      }
+    }
+
+    void hydrateAuthState();
+
+    const unsubscribe = onAuthStateChange((_, session) => {
+      const user = session?.user ?? null;
+
+      setAuthState({
+        email: user?.email ?? null,
+        error: null,
+        isAuthenticated: user != null,
+        loading: false,
+        userId: user?.id ?? null,
+      });
+
+      void syncProfileForAuthUser(user);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const clearAutoSaveTimer = useCallback((): void => {
     if (autoSaveTimeoutRef.current) {
@@ -990,7 +1123,11 @@ export function MapScreen() {
     setLastSyncStatus(trigger === 'auto' ? 'Auto-syncing saved territory...' : 'Syncing saved territory...');
 
     try {
-      const result = await uploadTerritory(territory, currentPlayerProfile?.playerId ?? null);
+      const result = await uploadTerritory(
+        territory,
+        currentPlayerProfile?.playerId ?? null,
+        currentAuthUserId ?? null,
+      );
 
       if (!result.success) {
         setLastSyncStatus(
@@ -1010,6 +1147,7 @@ export function MapScreen() {
     }
   }, [
     backendConfigured,
+    currentAuthUserId,
     currentPlayerProfile?.playerId,
     locallySyncedTerritoryIds,
     markTerritoriesAsLocallySynced,
@@ -1273,7 +1411,11 @@ export function MapScreen() {
     }
 
     updateCooldownTimestamp('lastSyncAt');
-    const result = await uploadTerritories(unsyncedSavedTerritories, currentPlayerProfile?.playerId ?? null);
+    const result = await uploadTerritories(
+      unsyncedSavedTerritories,
+      currentPlayerProfile?.playerId ?? null,
+      currentAuthUserId ?? null,
+    );
 
     setLastSyncStatus(result.success ? result.message : `Sync failed: ${result.message}`);
     if (result.success) {
@@ -1288,7 +1430,15 @@ export function MapScreen() {
       setPlayerIdentityStatus('Resetting player identity...');
       await clearPlayerIdentity();
       const nextProfile = await loadOrCreatePlayerProfile();
-      setCurrentPlayerProfile(nextProfile);
+      if (authState.isAuthenticated && authState.userId) {
+        const relinkedProfile = await linkAnonymousProfileToUser(authState.userId);
+        setCurrentPlayerProfile({
+          ...relinkedProfile,
+          email: authState.email ?? relinkedProfile.email ?? null,
+        });
+      } else {
+        setCurrentPlayerProfile(nextProfile);
+      }
       setIsPlayerStorageValid(wasPlayerStorageValid());
       setIsPlayerLoaded(true);
       setPlayerIdentityStatus('Player identity reset complete.');
@@ -1298,6 +1448,75 @@ export function MapScreen() {
       setIsPlayerStorageValid(false);
       setPlayerIdentityStatus(`Player identity reset failed: ${errorMessage}`);
     }
+  }
+
+  async function handleEmailAuth(mode: 'sign_in' | 'sign_up'): Promise<void> {
+    const email = normalizeAuthInput(authEmailInput);
+    const password = authPasswordInput;
+
+    if (!email || !password) {
+      setAuthState((previousState) => ({
+        ...previousState,
+        error: 'Email and password are required.',
+        loading: false,
+      }));
+      return;
+    }
+
+    setAuthState((previousState) => ({
+      ...previousState,
+      error: null,
+      loading: true,
+    }));
+
+    const result =
+      mode === 'sign_up'
+        ? await signUpWithEmail(email, password)
+        : await signInWithEmail(email, password);
+
+    setAuthState((previousState) => ({
+      ...previousState,
+      email: result.user?.email ?? previousState.email,
+      error: result.error,
+      isAuthenticated: result.user != null || result.session?.user != null,
+      loading: false,
+      userId: result.user?.id ?? result.session?.user?.id ?? previousState.userId,
+    }));
+  }
+
+  async function handleSignOut(): Promise<void> {
+    setAuthState((previousState) => ({
+      ...previousState,
+      error: null,
+      loading: true,
+    }));
+
+    const result = await signOut();
+
+    if (!result.success && result.error) {
+      setAuthState((previousState) => ({
+        ...previousState,
+        error: result.error,
+        loading: false,
+      }));
+      return;
+    }
+
+    const anonymousProfile = await updateLocalPlayerProfile({
+      email: null,
+      isAnonymous: true,
+      userId: null,
+    });
+
+    setCurrentPlayerProfile(anonymousProfile);
+    setAuthPasswordInput('');
+    setAuthState({
+      email: null,
+      error: null,
+      isAuthenticated: false,
+      loading: false,
+      userId: null,
+    });
   }
 
   async function confirmTerritoryCapture(): Promise<void> {
@@ -1358,6 +1577,7 @@ export function MapScreen() {
         captureOperation.carvedTerritories,
         captureOperation.newLocalTerritory,
         currentPlayerProfile?.playerId ?? null,
+        currentAuthUserId ?? null,
       );
 
       if (!backendResult.success) {
@@ -1494,6 +1714,7 @@ export function MapScreen() {
           territoryInteractionPlan.carvedTerritories,
           nextTerritory,
           currentPlayerProfile?.playerId ?? null,
+          currentAuthUserId ?? null,
         );
 
         if (backendResult.success) {
@@ -1534,6 +1755,7 @@ export function MapScreen() {
         territoryInteractionPlan.carvedTerritories,
         nextTerritory,
         currentPlayerProfile?.playerId ?? null,
+        currentAuthUserId ?? null,
       );
 
       if (backendResult.success) {
@@ -1577,6 +1799,7 @@ export function MapScreen() {
     claimCooldown.reason,
     claimCooldown.remainingMs,
     claimValidationResult,
+    currentAuthUserId,
     currentPlayerProfile?.playerId,
     markTerritoriesAsLocallySynced,
     refreshOnlineTerritories,
@@ -1725,6 +1948,9 @@ export function MapScreen() {
         </View>
       ) : null}
       <GameHUD
+        authEmail={authEmailInput}
+        authLoading={authState.loading}
+        authPassword={authPasswordInput}
         backendConfigured={backendConfigured}
         canFetchOnlineTerritories={canFetchOnlineTerritories}
         canStartTracking={canStartTracking}
@@ -1741,6 +1967,8 @@ export function MapScreen() {
         debugLines={debugLines}
         debugOpen={isDebugPanelExpanded}
         gpsReady={gpsReady}
+        onAuthEmailChange={setAuthEmailInput}
+        onAuthPasswordChange={setAuthPasswordInput}
         onClearTerritories={() => {
           void clearSavedTerritories();
         }}
@@ -1752,6 +1980,15 @@ export function MapScreen() {
         }}
         onSaveTerritory={() => {
           void saveTerritory('manual');
+        }}
+        onSignIn={() => {
+          void handleEmailAuth('sign_in');
+        }}
+        onSignOut={() => {
+          void handleSignOut();
+        }}
+        onSignUp={() => {
+          void handleEmailAuth('sign_up');
         }}
         onStartTracking={() => {
           void startTracking();
@@ -1826,6 +2063,40 @@ function haveViewportBoundsChanged(previousBounds: ViewportBounds, nextBounds: V
     hasMeaningfulNumberDelta(previousBounds.east, nextBounds.east, PERFORMANCE_CONFIG.viewportBoundsEpsilon) ||
     hasMeaningfulNumberDelta(previousBounds.west, nextBounds.west, PERFORMANCE_CONFIG.viewportBoundsEpsilon) ||
     hasMeaningfulNumberDelta(previousBounds.zoomLevel, nextBounds.zoomLevel, PERFORMANCE_CONFIG.viewportZoomEpsilon)
+  );
+}
+
+function getEffectiveOwnerContext(authUserId: string | null, playerId: string | null): EffectiveOwnerContext {
+  if (authUserId) {
+    return {
+      authUserId,
+      effectiveOwnerId: authUserId,
+      mode: 'auth',
+      playerId,
+    };
+  }
+
+  return {
+    authUserId: null,
+    effectiveOwnerId: playerId,
+    mode: 'device',
+    playerId,
+  };
+}
+
+function isOnlineTerritoryMine(
+  territory: Pick<OnlineTerritory, 'deviceId' | 'userId'>,
+  ownerContext: EffectiveOwnerContext,
+): boolean {
+  if (ownerContext.mode === 'auth') {
+    return territory.userId != null && territory.userId === ownerContext.authUserId;
+  }
+
+  return (
+    territory.userId == null &&
+    territory.deviceId != null &&
+    ownerContext.playerId != null &&
+    territory.deviceId === ownerContext.playerId
   );
 }
 

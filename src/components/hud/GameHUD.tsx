@@ -9,6 +9,9 @@ import { TopStatusBar } from './TopStatusBar';
 import { TrackingControls } from './TrackingControls';
 
 type GameHUDProps = {
+  authEmail: string;
+  authLoading: boolean;
+  authPassword: string;
   backendConfigured: boolean;
   canFetchOnlineTerritories: boolean;
   canStartTracking: boolean;
@@ -22,10 +25,15 @@ type GameHUDProps = {
   debugLines: readonly string[];
   debugOpen: boolean;
   gpsReady: boolean;
+  onAuthEmailChange: (value: string) => void;
+  onAuthPasswordChange: (value: string) => void;
   onClearTerritories: () => void;
   onFetchOnlineTerritories: () => void;
   onResetIdentity: () => void;
   onSaveTerritory: () => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
+  onSignUp: () => void;
   onStartTracking: () => void;
   onStopTracking: () => void;
   onSyncTerritories: () => void;
@@ -67,12 +75,20 @@ function GameHUDComponent(props: GameHUDProps) {
         </View>
         <View pointerEvents="box-none" style={styles.bottomCluster}>
           <DebugOverlay
+            authEmail={props.authEmail}
+            authLoading={props.authLoading}
+            authPassword={props.authPassword}
             debugLines={props.debugLines}
             expanded={props.debugOpen}
             fetchOnlineDisabled={!props.canFetchOnlineTerritories}
+            onAuthEmailChange={props.onAuthEmailChange}
+            onAuthPasswordChange={props.onAuthPasswordChange}
             onClearSavedTerritories={props.onClearTerritories}
             onFetchOnlineTerritories={props.onFetchOnlineTerritories}
             onResetIdentity={props.onResetIdentity}
+            onSignIn={props.onSignIn}
+            onSignOut={props.onSignOut}
+            onSignUp={props.onSignUp}
             onToggle={props.onToggleDebug}
           />
           <TrackingControls

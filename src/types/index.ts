@@ -1,5 +1,6 @@
 import type { Coordinates } from './location';
 import type { ClaimRejectReason, ClaimValidationResult, TerritoryCaptureResult } from './claim';
+import type { AuthState } from './auth';
 import type { PolygonAreaResult } from './geo';
 import type { PlayerProfile } from './player';
 import type { ConflictSeverity, ConflictVisualizationState } from './conflict';
@@ -10,6 +11,7 @@ import type { TerritoryRealtimeEvent, TerritoryRealtimeEventType } from './realt
 
 export type { Coordinates } from './location';
 export type { ClaimRejectReason, ClaimValidationResult, TerritoryCaptureResult } from './claim';
+export type { AuthState } from './auth';
 export type { PolygonAreaResult } from './geo';
 export type { PlayerProfile } from './player';
 export type { ConflictSeverity, ConflictVisualizationState } from './conflict';

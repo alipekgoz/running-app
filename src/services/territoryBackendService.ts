@@ -43,6 +43,12 @@ export type TerritoryRow = {
   source_route_point_count?: unknown;
   sync_status?: unknown;
   updated_at?: unknown;
+  user_id?: unknown;
+};
+
+type TerritoryIdentityPayload = {
+  playerId?: string | null;
+  userId?: string | null;
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -95,19 +101,31 @@ export function parseOnlineTerritoryRow(row: TerritoryRow): OnlineTerritory | nu
     sourceRoutePointCount: row.source_route_point_count,
     syncStatus: row.sync_status,
     updatedAt: row.updated_at,
+    userId: isNonEmptyString(row.user_id) ? row.user_id : null,
   };
 }
 
-function toTerritoryInsertPayload(territory: LocalSavedTerritory, playerId?: string | null) {
+function isMissingUserIdColumnError(message: string): boolean {
+  const normalizedMessage = message.toLowerCase();
+
+  return normalizedMessage.includes("could not find the 'user_id' column") || normalizedMessage.includes('column "user_id" does not exist');
+}
+
+function toTerritoryInsertPayload(
+  territory: LocalSavedTerritory,
+  identity?: TerritoryIdentityPayload,
+  includeUserId = true,
+) {
   return {
     area_hectare: territory.areaHectare,
     area_m2: territory.areaM2,
     coordinates: territory.coordinates,
     created_at: territory.createdAt,
-    device_id: playerId ?? null,
+    device_id: identity?.playerId ?? null,
     id: territory.id,
     source_route_point_count: territory.sourceRoutePointCount,
     sync_status: 'synced',
+    ...(includeUserId ? { user_id: identity?.userId ?? null } : {}),
   };
 }
 
@@ -128,10 +146,22 @@ export async function fetchTerritories(): Promise<FetchTerritoriesResult> {
   }
 
   try {
-    const { data, error } = await supabase
+    const primaryResult = await supabase
       .from('territories')
-      .select('id, device_id, coordinates, area_m2, area_hectare, source_route_point_count, created_at, updated_at, sync_status')
+      .select('id, device_id, user_id, coordinates, area_m2, area_hectare, source_route_point_count, created_at, updated_at, sync_status')
       .order('created_at', { ascending: false });
+    let data: unknown = primaryResult.data;
+    let error = primaryResult.error;
+
+    if (error && isMissingUserIdColumnError(error.message)) {
+      const fallbackResult = await supabase
+        .from('territories')
+        .select('id, device_id, coordinates, area_m2, area_hectare, source_route_point_count, created_at, updated_at, sync_status')
+        .order('created_at', { ascending: false });
+
+      data = fallbackResult.data;
+      error = fallbackResult.error;
+    }
 
     if (error) {
       return {
@@ -190,6 +220,7 @@ export async function fetchTerritoriesForViewport(
 export async function uploadTerritory(
   territory: LocalSavedTerritory,
   playerId?: string | null,
+  userId?: string | null,
 ): Promise<UploadResult> {
   const supabase = getSupabaseClient();
 
@@ -201,10 +232,23 @@ export async function uploadTerritory(
   }
 
   try {
-    const { error } = await supabase.from('territories').upsert(
-      toTerritoryInsertPayload(territory, playerId),
+    const territoryIdentity: TerritoryIdentityPayload = {
+      playerId,
+      userId,
+    };
+    let { error } = await supabase.from('territories').upsert(
+      toTerritoryInsertPayload(territory, territoryIdentity, true),
       { onConflict: 'id' },
     );
+
+    if (error && isMissingUserIdColumnError(error.message)) {
+      const fallbackResult = await supabase.from('territories').upsert(
+        toTerritoryInsertPayload(territory, territoryIdentity, false),
+        { onConflict: 'id' },
+      );
+
+      error = fallbackResult.error;
+    }
 
     if (error) {
       return {
@@ -230,6 +274,7 @@ export async function uploadTerritory(
 export async function uploadTerritories(
   territories: readonly LocalSavedTerritory[],
   playerId?: string | null,
+  userId?: string | null,
 ): Promise<UploadResult> {
   const supabase = getSupabaseClient();
 
@@ -248,10 +293,23 @@ export async function uploadTerritories(
   }
 
   try {
-    const { error } = await supabase.from('territories').upsert(
-      territories.map((territory) => toTerritoryInsertPayload(territory, playerId)),
+    const territoryIdentity: TerritoryIdentityPayload = {
+      playerId,
+      userId,
+    };
+    let { error } = await supabase.from('territories').upsert(
+      territories.map((territory) => toTerritoryInsertPayload(territory, territoryIdentity, true)),
       { onConflict: 'id' },
     );
+
+    if (error && isMissingUserIdColumnError(error.message)) {
+      const fallbackResult = await supabase.from('territories').upsert(
+        territories.map((territory) => toTerritoryInsertPayload(territory, territoryIdentity, false)),
+        { onConflict: 'id' },
+      );
+
+      error = fallbackResult.error;
+    }
 
     if (error) {
       return {
@@ -279,6 +337,7 @@ export async function transferTerritoryOwnership(
   carvedTerritories: readonly CarvedTerritoryUpdate[],
   newTerritory: LocalSavedTerritory,
   playerId?: string | null,
+  userId?: string | null,
 ): Promise<CaptureTransferResult> {
   const supabase = getSupabaseClient();
   const captureTimestamp = new Date().toISOString();
@@ -360,7 +419,21 @@ export async function transferTerritoryOwnership(
       }
     }
 
-    const { error: insertError } = await supabase.from('territories').insert(toTerritoryInsertPayload(newTerritory, playerId));
+    const territoryIdentity: TerritoryIdentityPayload = {
+      playerId,
+      userId,
+    };
+    let { error: insertError } = await supabase
+      .from('territories')
+      .insert(toTerritoryInsertPayload(newTerritory, territoryIdentity, true));
+
+    if (insertError && isMissingUserIdColumnError(insertError.message)) {
+      const fallbackInsert = await supabase
+        .from('territories')
+        .insert(toTerritoryInsertPayload(newTerritory, territoryIdentity, false));
+
+      insertError = fallbackInsert.error;
+    }
 
     if (insertError) {
       return {

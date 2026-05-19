@@ -25,16 +25,28 @@ function isValidPlayerProfile(value: unknown): value is PlayerProfile {
     isNonEmptyString(profile.playerId) &&
     isNonEmptyString(profile.createdAt) &&
     isNonEmptyString(profile.lastSeenAt) &&
-    (profile.appVersion === undefined || isNonEmptyString(profile.appVersion))
+    (profile.isAnonymous === undefined || typeof profile.isAnonymous === 'boolean') &&
+    (profile.appVersion === undefined || isNonEmptyString(profile.appVersion)) &&
+    (profile.userId === undefined || profile.userId === null || isNonEmptyString(profile.userId)) &&
+    (profile.email === undefined || profile.email === null || isNonEmptyString(profile.email)) &&
+    (profile.username === undefined || profile.username === null || isNonEmptyString(profile.username)) &&
+    (profile.displayName === undefined || profile.displayName === null || isNonEmptyString(profile.displayName)) &&
+    (profile.avatarUrl === undefined || profile.avatarUrl === null || isNonEmptyString(profile.avatarUrl))
   );
 }
 
 function createPlayerProfile(playerId: string, createdAt: string): PlayerProfile {
   return {
     appVersion: Constants.expoConfig?.version,
+    avatarUrl: null,
     createdAt,
+    displayName: null,
+    email: null,
+    isAnonymous: true,
     lastSeenAt: createdAt,
     playerId,
+    userId: null,
+    username: null,
   };
 }
 
@@ -70,7 +82,13 @@ export async function loadOrCreatePlayerProfile(): Promise<PlayerProfile> {
       const refreshedProfile: PlayerProfile = {
         ...parsedProfile,
         appVersion: parsedProfile.appVersion ?? Constants.expoConfig?.version,
+        avatarUrl: parsedProfile.avatarUrl ?? null,
+        displayName: parsedProfile.displayName ?? null,
+        email: parsedProfile.email ?? null,
+        isAnonymous: parsedProfile.isAnonymous ?? parsedProfile.userId == null,
         lastSeenAt: new Date().toISOString(),
+        userId: parsedProfile.userId ?? null,
+        username: parsedProfile.username ?? null,
       };
 
       await persistPlayerIdentity(refreshedProfile);
@@ -120,6 +138,23 @@ export function getCurrentPlayerProfile(): PlayerProfile | null {
 
 export function wasPlayerStorageValid(): boolean {
   return lastStorageWasValid;
+}
+
+export async function savePlayerProfile(playerProfile: PlayerProfile): Promise<void> {
+  const nextProfile: PlayerProfile = {
+    ...playerProfile,
+    appVersion: playerProfile.appVersion ?? Constants.expoConfig?.version,
+    avatarUrl: playerProfile.avatarUrl ?? null,
+    displayName: playerProfile.displayName ?? null,
+    email: playerProfile.email ?? null,
+    isAnonymous: playerProfile.userId == null,
+    lastSeenAt: playerProfile.lastSeenAt,
+    userId: playerProfile.userId ?? null,
+    username: playerProfile.username ?? null,
+  };
+
+  await persistPlayerIdentity(nextProfile);
+  currentPlayerProfile = nextProfile;
 }
 
 export async function clearPlayerIdentity(): Promise<void> {
